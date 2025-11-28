@@ -773,4 +773,24 @@ router.get('/patients/:patientId/appointments', async (req, res) => {
   }
 });
 // Export the router
+
+const twilio = require('twilio');
+
+router.use(express.urlencoded({ extended: false }));
+
+router.post('/twilio-webhook', (req, res) => {
+  const userMessage = req.body.Body;
+  const fromNumber = req.body.From;
+
+  console.log("📩 Incoming SMS:");
+  console.log("From:", fromNumber);
+  console.log("Message:", userMessage);
+
+  const twiml = new twilio.twiml.MessagingResponse();
+  twiml.message(`Medicare AI Bot received: "${userMessage}"`);
+
+  res.set('Content-Type', 'text/xml');
+  res.send(twiml.toString());
+});
+
 module.exports = router;
