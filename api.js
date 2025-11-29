@@ -145,12 +145,8 @@ async function sendConfirmationEmail({ toEmail, subject, htmlBody, textBody }) {
   }
 }
 
-// ----------------------
-// BASIC ROUTES (doctors/patients/freebusy)
-// ----------------------
 // ========================================
 // ENHANCED API ENDPOINTS FOR CHATBOT
-// Add these to your existing api.js file
 // ========================================
 
 // ========================================
@@ -216,13 +212,50 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
       return res.status(404).json({ error: "Doctor not found" });
     }
     
-    // Get day of week - CORRECTED LINE
-    const dateObj = new Date(date + 'T00:00:00');
+    // Debug log
+    console.log('Doctor found:', doctor.doctorId);
+    console.log('Availability object:', JSON.stringify(doctor.availability, null, 2));
+    
+    // Get day of week
+    const dateObj = new Date(date + 'T12:00:00'); // Use noon to avoid timezone issues
     const dayOfWeek = dateObj.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
     
-    const dayAvailability = doctor.availability[dayOfWeek];
+    console.log('Date:', date);
+    console.log('Day of week:', dayOfWeek);
     
-    if (!dayAvailability || !dayAvailability.available) {
+    // Check if availability exists and is an object
+    if (!doctor.availability || typeof doctor.availability !== 'object') {
+      console.error('Doctor availability is missing or invalid');
+      return res.json({
+        date,
+        doctorId: doctor.doctorId,
+        doctorName: doctor.name,
+        availableSlots: [],
+        message: "Doctor availability not configured"
+      });
+    }
+    
+    // Convert to plain object if needed (Mongoose document to plain object)
+    const availability = doctor.availability.toObject ? doctor.availability.toObject() : doctor.availability;
+    
+    console.log('Availability after toObject:', JSON.stringify(availability, null, 2));
+    console.log('Checking day:', dayOfWeek);
+    console.log('Day availability:', JSON.stringify(availability[dayOfWeek], null, 2));
+    
+    const dayAvailability = availability[dayOfWeek];
+    
+    if (!dayAvailability) {
+      console.error(`No availability data for ${dayOfWeek}`);
+      return res.json({
+        date,
+        doctorId: doctor.doctorId,
+        doctorName: doctor.name,
+        availableSlots: [],
+        message: `No availability data for ${dayOfWeek}`
+      });
+    }
+    
+    if (!dayAvailability.available) {
       return res.json({
         date,
         doctorId: doctor.doctorId,
@@ -231,7 +264,7 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
         message: "Doctor not available on this day"
       });
     }
-        
+    
     // Check Google Calendar for busy times
     const timeMin = `${date}T00:00:00+05:30`;
     const timeMax = `${date}T23:59:59+05:30`;
@@ -250,6 +283,8 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
       date: date,
       status: { $ne: 'cancelled' }
     });
+    
+    console.log(`Found ${existingAppointments.length} existing appointments for ${date}`);
     
     // Generate available slots
     const availableSlots = generateAvailableSlots(
@@ -276,7 +311,10 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
     
   } catch (err) {
     console.error('Error checking availability:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ 
+      error: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   }
 });
 
@@ -362,6 +400,7 @@ function isSlotConflicting(slotStart, slotEnd, busyPeriods, existingAppointments
     
     // Check for overlap
     if (slotStartTime < busyEnd && slotEndTime > busyStart) {
+      console.log(`Slot ${slotStart} conflicts with calendar busy period`);
       return true;
     }
   }
@@ -373,6 +412,7 @@ function isSlotConflicting(slotStart, slotEnd, busyPeriods, existingAppointments
     
     // Check for overlap
     if (slotStartTime < apptEnd && slotEndTime > apptStart) {
+      console.log(`Slot ${slotStart} conflicts with existing appointment ${appointment.appointmentId}`);
       return true;
     }
   }
@@ -768,11 +808,9 @@ router.get('/patients/:patientId/appointments', async (req, res) => {
       count: enrichedAppointments.length,
       appointments: enrichedAppointments
     });
-    
   } catch (err) {
     res.status(500).json({ error: err.message });
-  }
+}
 });
 // Export the router
 module.exports = router;
-
