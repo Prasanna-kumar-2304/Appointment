@@ -204,10 +204,10 @@ router.get('/specialties', async (req, res) => {
 // ========================================
 router.post('/doctors/:doctorId/availability', async (req, res) => {
   try {
-    const { date } = req.body; // Format: "2025-11-28"
+    const { date } = req.body;
     
     if (!date) {
-      return res.status(400).json({ error: "Date is required" });
+      return res.status(400).json({ error: "Date is required (format: YYYY-MM-DD)" });
     }
     
     const doctor = await Doctor.findOne({ doctorId: req.params.doctorId });
@@ -216,80 +216,12 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
       return res.status(404).json({ error: "Doctor not found" });
     }
     
-    // Debug log
-    console.log('Doctor found:', doctor.doctorId);
-    console.log('Raw availability:', doctor.availability);
+    const dayOfWeek = new Date(date).toLocaleDateString('en-US', { weekday: 'lowercase' });
+    const dayAvailability = doctor.availability[dayOfWeek];
     
-    // Get day of week
-    const dateObj = new Date(date + 'T12:00:00');
-    const dayOfWeek = dateObj.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
-    
-    console.log('Date:', date);
-    console.log('Day of week:', dayOfWeek);
-    
-    // Check if availability exists and is properly structured
-    if (!doctor.availability) {
-      console.error('Doctor availability is null/undefined');
-      return res.status(500).json({
-        error: "Doctor availability not configured",
-        message: "Please contact administrator to configure doctor availability",
-        doctorId: doctor.doctorId
-      });
-    }
-    
-    // Convert Mongoose document to plain object
-    let availability;
-    try {
-      availability = doctor.availability.toObject ? 
-                    doctor.availability.toObject() : 
-                    JSON.parse(JSON.stringify(doctor.availability));
-    } catch (conversionError) {
-      console.error('Error converting availability:', conversionError);
-      availability = doctor.availability;
-    }
-    
-    console.log('Converted availability:', JSON.stringify(availability, null, 2));
-    
-    // Validate availability structure
-    if (typeof availability !== 'object') {
-      console.error('Availability is not an object:', typeof availability);
-      return res.status(500).json({
-        error: "Invalid availability structure",
-        message: "Doctor availability data is corrupted",
-        doctorId: doctor.doctorId
-      });
-    }
-    
-    // Check if the specific day exists
-    if (!availability[dayOfWeek]) {
-      console.error(`No availability data for ${dayOfWeek}`);
+    if (!dayAvailability || !dayAvailability.available) {
       return res.json({
-        date,
-        doctorId: doctor.doctorId,
-        doctorName: doctor.name,
-        availableSlots: [],
-        message: `No availability configuration for ${dayOfWeek}`
-      });
-    }
-    
-    const dayAvailability = availability[dayOfWeek];
-    
-    // Validate day availability structure
-    if (typeof dayAvailability !== 'object' || 
-        !dayAvailability.hasOwnProperty('available') ||
-        !dayAvailability.hasOwnProperty('start') ||
-        !dayAvailability.hasOwnProperty('end')) {
-      console.error('Invalid day availability structure:', dayAvailability);
-      return res.status(500).json({
-        error: "Invalid day availability structure",
-        message: `Availability data for ${dayOfWeek} is incomplete`,
-        doctorId: doctor.doctorId
-      });
-    }
-    
-    // Check if doctor is available on this day
-    if (!dayAvailability.available) {
-      return res.json({
+        success: true,
         date,
         doctorId: doctor.doctorId,
         doctorName: doctor.name,
@@ -298,17 +230,6 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
       });
     }
     
-    // Validate start and end times
-    if (!dayAvailability.start || !dayAvailability.end) {
-      console.error('Missing start or end time:', dayAvailability);
-      return res.status(500).json({
-        error: "Invalid working hours",
-        message: "Doctor working hours not properly configured",
-        doctorId: doctor.doctorId
-      });
-    }
-    
-    // Check Google Calendar for busy times
     const timeMin = `${date}T00:00:00+05:30`;
     const timeMax = `${date}T23:59:59+05:30`;
     
@@ -319,19 +240,15 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
         busyPeriods = freeBusy.busy || [];
       }
     } catch (calErr) {
-      console.warn('Calendar check failed, showing all slots:', calErr.message);
+      console.warn('Calendar check skipped:', calErr.message);
     }
     
-    // Get existing appointments for this doctor on this date
     const existingAppointments = await Appointment.find({
       doctorId: doctor.doctorId,
       date: date,
       status: { $ne: 'cancelled' }
     });
     
-    console.log(`Found ${existingAppointments.length} existing appointments for ${date}`);
-    
-    // Generate available slots
     const availableSlots = generateAvailableSlots(
       date,
       dayAvailability.start,
@@ -341,6 +258,7 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
     );
     
     res.json({
+      success: true,
       date,
       doctorId: doctor.doctorId,
       doctorName: doctor.name,
@@ -356,14 +274,9 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
     
   } catch (err) {
     console.error('Error checking availability:', err);
-    console.error('Stack trace:', err.stack);
-    res.status(500).json({ 
-      error: err.message,
-      details: process.env.NODE_ENV === 'development' ? err.stack : 'Internal server error'
-    });
+    res.status(500).json({ error: err.message });
   }
 });
-
 // ========================================
 // HELPER: GENERATE AVAILABLE SLOTS
 // ========================================
@@ -859,4 +772,5 @@ router.get('/patients/:patientId/appointments', async (req, res) => {
 });
 // Export the router
 module.exports = router;
+
 
