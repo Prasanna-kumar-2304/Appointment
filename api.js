@@ -5,7 +5,7 @@ const nodemailer = require('nodemailer');
 
 const Doctor = require('./Doctor');
 const Patient = require('./Patient');
-const Appointment = require('./Appointment');
+const Appointment = require('./appointment');
 
 const { getFreeBusy, createEvent, listCalendars } = require('./google');
 
@@ -216,13 +216,79 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
       return res.status(404).json({ error: "Doctor not found" });
     }
     
-    // Get day of week - CORRECTED LINE
-    const dateObj = new Date(date + 'T00:00:00');
+    // Debug log
+    console.log('Doctor found:', doctor.doctorId);
+    console.log('Raw availability:', doctor.availability);
+    
+    // Get day of week
+    const dateObj = new Date(date + 'T12:00:00');
     const dayOfWeek = dateObj.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
     
-    const dayAvailability = doctor.availability[dayOfWeek];
+    console.log('Date:', date);
+    console.log('Day of week:', dayOfWeek);
     
-    if (!dayAvailability || !dayAvailability.available) {
+    // Check if availability exists and is properly structured
+    if (!doctor.availability) {
+      console.error('Doctor availability is null/undefined');
+      return res.status(500).json({
+        error: "Doctor availability not configured",
+        message: "Please contact administrator to configure doctor availability",
+        doctorId: doctor.doctorId
+      });
+    }
+    
+    // Convert Mongoose document to plain object
+    let availability;
+    try {
+      availability = doctor.availability.toObject ? 
+                    doctor.availability.toObject() : 
+                    JSON.parse(JSON.stringify(doctor.availability));
+    } catch (conversionError) {
+      console.error('Error converting availability:', conversionError);
+      availability = doctor.availability;
+    }
+    
+    console.log('Converted availability:', JSON.stringify(availability, null, 2));
+    
+    // Validate availability structure
+    if (typeof availability !== 'object') {
+      console.error('Availability is not an object:', typeof availability);
+      return res.status(500).json({
+        error: "Invalid availability structure",
+        message: "Doctor availability data is corrupted",
+        doctorId: doctor.doctorId
+      });
+    }
+    
+    // Check if the specific day exists
+    if (!availability[dayOfWeek]) {
+      console.error(`No availability data for ${dayOfWeek}`);
+      return res.json({
+        date,
+        doctorId: doctor.doctorId,
+        doctorName: doctor.name,
+        availableSlots: [],
+        message: `No availability configuration for ${dayOfWeek}`
+      });
+    }
+    
+    const dayAvailability = availability[dayOfWeek];
+    
+    // Validate day availability structure
+    if (typeof dayAvailability !== 'object' || 
+        !dayAvailability.hasOwnProperty('available') ||
+        !dayAvailability.hasOwnProperty('start') ||
+        !dayAvailability.hasOwnProperty('end')) {
+      console.error('Invalid day availability structure:', dayAvailability);
+      return res.status(500).json({
+        error: "Invalid day availability structure",
+        message: `Availability data for ${dayOfWeek} is incomplete`,
+        doctorId: doctor.doctorId
+      });
+    }
+    
+    // Check if doctor is available on this day
+    if (!dayAvailability.available) {
       return res.json({
         date,
         doctorId: doctor.doctorId,
@@ -231,15 +297,27 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
         message: "Doctor not available on this day"
       });
     }
-        
+    
+    // Validate start and end times
+    if (!dayAvailability.start || !dayAvailability.end) {
+      console.error('Missing start or end time:', dayAvailability);
+      return res.status(500).json({
+        error: "Invalid working hours",
+        message: "Doctor working hours not properly configured",
+        doctorId: doctor.doctorId
+      });
+    }
+    
     // Check Google Calendar for busy times
     const timeMin = `${date}T00:00:00+05:30`;
     const timeMax = `${date}T23:59:59+05:30`;
     
-    let busyPeriods = [];a
+    let busyPeriods = [];
     try {
-      const freeBusy = await getFreeBusy(doctor.calendarId, timeMin, timeMax);
-      busyPeriods = freeBusy.busy || [];
+      if (doctor.calendarId) {
+        const freeBusy = await getFreeBusy(doctor.calendarId, timeMin, timeMax);
+        busyPeriods = freeBusy.busy || [];
+      }
     } catch (calErr) {
       console.warn('Calendar check failed, showing all slots:', calErr.message);
     }
@@ -250,6 +328,8 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
       date: date,
       status: { $ne: 'cancelled' }
     });
+    
+    console.log(`Found ${existingAppointments.length} existing appointments for ${date}`);
     
     // Generate available slots
     const availableSlots = generateAvailableSlots(
@@ -276,7 +356,11 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
     
   } catch (err) {
     console.error('Error checking availability:', err);
-    res.status(500).json({ error: err.message });
+    console.error('Stack trace:', err.stack);
+    res.status(500).json({ 
+      error: err.message,
+      details: process.env.NODE_ENV === 'development' ? err.stack : 'Internal server error'
+    });
   }
 });
 
