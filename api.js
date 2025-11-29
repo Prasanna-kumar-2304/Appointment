@@ -1,4 +1,3 @@
-//api code
 const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
@@ -6,7 +5,7 @@ const nodemailer = require('nodemailer');
 
 const Doctor = require('./Doctor');
 const Patient = require('./Patient');
-const Appointment = require('./Appointment');
+const Appointment = require('./appointment');
 
 const { getFreeBusy, createEvent, listCalendars } = require('./google');
 
@@ -217,8 +216,10 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
       return res.status(404).json({ error: "Doctor not found" });
     }
     
-    // Get day of week
-    const dayOfWeek = new Date(date).toLocaleDateString('en-US', { weekday: 'lowercase' });
+    // Get day of week - CORRECTED LINE
+    const dateObj = new Date(date + 'T00:00:00');
+    const dayOfWeek = dateObj.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    
     const dayAvailability = doctor.availability[dayOfWeek];
     
     if (!dayAvailability || !dayAvailability.available) {
@@ -230,7 +231,7 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
         message: "Doctor not available on this day"
       });
     }
-    
+        
     // Check Google Calendar for busy times
     const timeMin = `${date}T00:00:00+05:30`;
     const timeMax = `${date}T23:59:59+05:30`;
