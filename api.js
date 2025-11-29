@@ -3,11 +3,11 @@ const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const nodemailer = require('nodemailer');
 
-const Doctor = require('./Doctor');
-const Patient = require('./Patient');
-const Appointment = require('./Appointment');
+const Doctor = require('../models/Doctor');
+const Patient = require('../models/Patient');
+const Appointment = require('../models/Appointment');
 
-const { getFreeBusy, createEvent, listCalendars } = require('./google');
+const { getFreeBusy, createEvent, listCalendars } = require('../lib/google');
 
 // ----------------------
 // Middleware
@@ -327,63 +327,6 @@ router.get('/appointments', async (req, res) => {
   }
 });
 
-// Get available time slots for a doctor on a specific date
-router.post('/doctors/:doctorId/available-slots', async (req, res) => {
-  try {
-    const { date } = req.body; // Expected format: "2025-11-28"
-    
-    const doctor = await Doctor.findOne({ doctorId: req.params.doctorId });
-    if (!doctor) return res.status(404).json({ error: "Doctor not found" });
-
-    // Define working hours
-    const workingHours = {
-      start: 9, // 9 AM
-      end: 17,  // 5 PM
-      slotDuration: 60 // 60 minutes per slot
-    };
-
-    // Get busy times from Google Calendar
-    const startOfDay = `${date}T00:00:00+05:30`;
-    const endOfDay = `${date}T23:59:59+05:30`;
-    
-    const freeBusy = await getFreeBusy(doctor.calendarId, startOfDay, endOfDay);
-    const busySlots = freeBusy.calendars[doctor.calendarId]?.busy || [];
-
-    // Generate all possible slots
-    const availableSlots = [];
-    for (let hour = workingHours.start; hour < workingHours.end; hour++) {
-      const slotStart = new Date(`${date}T${hour.toString().padStart(2, '0')}:00:00+05:30`);
-      const slotEnd = new Date(slotStart.getTime() + workingHours.slotDuration * 60000);
-
-      // Check if slot overlaps with any busy time
-      const isAvailable = !busySlots.some(busy => {
-        const busyStart = new Date(busy.start);
-        const busyEnd = new Date(busy.end);
-        return (slotStart < busyEnd && slotEnd > busyStart);
-      });
-
-      if (isAvailable) {
-        const timeStr = slotStart.toLocaleTimeString('en-US', { 
-          hour: '2-digit', 
-          minute: '2-digit',
-          hour12: true 
-        });
-        availableSlots.push(timeStr);
-      }
-    }
-
-    res.json({ 
-      success: true, 
-      date, 
-      slots: availableSlots 
-    });
-
-  } catch (err) {
-    console.error("Error fetching available slots:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // ---------------------------------------------------------
 // GET ONE APPOINTMENT BY ID
 // ---------------------------------------------------------
@@ -579,6 +522,63 @@ router.get('/appointments-upcoming', async (req, res) => {
   }
 });
 
+// Get available time slots for a doctor on a specific date
+router.post('/doctors/:doctorId/available-slots', async (req, res) => {
+  try {
+    const { date } = req.body; // Expected format: "2025-11-28"
+    
+    const doctor = await Doctor.findOne({ doctorId: req.params.doctorId });
+    if (!doctor) return res.status(404).json({ error: "Doctor not found" });
+
+    // Define working hours
+    const workingHours = {
+      start: 9, // 9 AM
+      end: 17,  // 5 PM
+      slotDuration: 60 // 60 minutes per slot
+    };
+
+    // Get busy times from Google Calendar
+    const startOfDay = `${date}T00:00:00+05:30`;
+    const endOfDay = `${date}T23:59:59+05:30`;
+    
+    const freeBusy = await getFreeBusy(doctor.calendarId, startOfDay, endOfDay);
+    const busySlots = freeBusy.calendars[doctor.calendarId]?.busy || [];
+
+    // Generate all possible slots
+    const availableSlots = [];
+    for (let hour = workingHours.start; hour < workingHours.end; hour++) {
+      const slotStart = new Date(`${date}T${hour.toString().padStart(2, '0')}:00:00+05:30`);
+      const slotEnd = new Date(slotStart.getTime() + workingHours.slotDuration * 60000);
+
+      // Check if slot overlaps with any busy time
+      const isAvailable = !busySlots.some(busy => {
+        const busyStart = new Date(busy.start);
+        const busyEnd = new Date(busy.end);
+        return (slotStart < busyEnd && slotEnd > busyStart);
+      });
+
+      if (isAvailable) {
+        const timeStr = slotStart.toLocaleTimeString('en-US', { 
+          hour: '2-digit', 
+          minute: '2-digit',
+          hour12: true 
+        });
+        availableSlots.push(timeStr);
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      date, 
+      slots: availableSlots 
+    });
+
+  } catch (err) {
+    console.error("Error fetching available slots:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ---------------------------------------------------------
 // CRUD FOR DOCTORS
 // ---------------------------------------------------------
@@ -664,26 +664,4 @@ router.delete('/appointments/:appointmentId', requireApiKey, async (req, res) =>
     res.status(500).json({ error: err.message });
   }
 });
-module.exports = router;
-
-// // ========================================
-// // TWILIO SMS WEBHOOK
-// // ========================================
-// const twilio = require('twilio');
-// router.use(express.urlencoded({ extended: false }));
-
-// router.post('/twilio-webhook', (req, res) => {
-//   const incomingMsg = req.body.Body;
-//   const from = req.body.From;
-
-//   console.log("📩 SMS Received from:", from);
-//   console.log("Message:", incomingMsg);
-
-//   const twiml = new twilio.twiml.MessagingResponse();
-//   twiml.message(`Thanks for messaging Medicare! You said: "${incomingMsg}".`);
-
-//   res.writeHead(200, { 'Content-Type': 'text/xml' });
-//   res.end(twiml.toString());
-// });
-
-
+module.exports = router;  
