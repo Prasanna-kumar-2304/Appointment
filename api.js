@@ -210,6 +210,14 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
       return res.status(400).json({ error: "Date is required (format: YYYY-MM-DD)" });
     }
     
+    // Validate date format
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(date)) {
+      return res.status(400).json({ 
+        error: "Invalid date format. Use YYYY-MM-DD (e.g., 2025-12-02)" 
+      });
+    }
+    
     const doctor = await Doctor.findOne({ doctorId: req.params.doctorId });
     
     if (!doctor) {
@@ -225,18 +233,48 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
       });
     }
     
-    // FIX: Use 'long' option and then convert to lowercase
-    const dayOfWeek = new Date(date).toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    // Parse the date and get day of week
+    const dateObj = new Date(date + 'T00:00:00');
+    const dayOfWeek = dateObj.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    
+    console.log('Date requested:', date);
+    console.log('Day of week:', dayOfWeek);
+    console.log('Doctor availability keys:', Object.keys(doctor.availability));
+    
     const dayAvailability = doctor.availability[dayOfWeek];
     
-    if (!dayAvailability || !dayAvailability.available) {
+    // Check if this day exists in the schedule
+    if (!dayAvailability) {
       return res.json({
         success: true,
         date,
+        dayOfWeek,
+        doctorId: doctor.doctorId,
+        doctorName: doctor.name,
+        availableSlots: [],
+        message: `No schedule configured for ${dayOfWeek}`
+      });
+    }
+    
+    // Check if doctor is available on this day
+    if (!dayAvailability.available) {
+      return res.json({
+        success: true,
+        date,
+        dayOfWeek,
         doctorId: doctor.doctorId,
         doctorName: doctor.name,
         availableSlots: [],
         message: "Doctor not available on this day"
+      });
+    }
+    
+    // Check if start and end times are defined
+    if (!dayAvailability.start || !dayAvailability.end) {
+      return res.status(400).json({
+        error: "Doctor's working hours not properly configured",
+        dayOfWeek,
+        availability: dayAvailability
       });
     }
     
@@ -270,6 +308,7 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
     res.json({
       success: true,
       date,
+      dayOfWeek,
       doctorId: doctor.doctorId,
       doctorName: doctor.name,
       specialty: doctor.specialty,
@@ -284,9 +323,13 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
     
   } catch (err) {
     console.error('Error checking availability:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ 
+      error: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   }
 });
+
 // ========================================
 // HELPER: GENERATE AVAILABLE SLOTS
 // ========================================
@@ -782,6 +825,7 @@ router.get('/patients/:patientId/appointments', async (req, res) => {
 });
 // Export the router
 module.exports = router;
+
 
 
 
