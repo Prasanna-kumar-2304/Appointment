@@ -1,14 +1,13 @@
-//api code
 const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const nodemailer = require('nodemailer');
 
-const Doctor = require('./Doctor');
-const Patient = require('./Patient');
-const Appointment = require('./Appointment');
+const Doctor = require('../models/Doctor');
+const Patient = require('../models/Patient');
+const Appointment = require('../models/Appointment');
 
-const { getFreeBusy, createEvent, listCalendars } = require('./google');
+const { getFreeBusy, createEvent, listCalendars } = require('../lib/google');
 
 // ----------------------
 // Middleware
@@ -149,629 +148,541 @@ async function sendConfirmationEmail({ toEmail, subject, htmlBody, textBody }) {
 // ----------------------
 // BASIC ROUTES (doctors/patients/freebusy)
 // ----------------------
-// ========================================
-// ENHANCED API ENDPOINTS FOR CHATBOT
-// Add these to your existing api.js file
-// ========================================
-
-// ========================================
-// 1. GET DOCTORS BY SPECIALTY
-// ========================================
-router.get('/doctors/specialty/:specialty', async (req, res) => {
-  try {
-    const specialty = req.params.specialty;
-    
-    // Case-insensitive search
-    const doctors = await Doctor.find({ 
-      specialty: new RegExp(`^${specialty}$`, 'i')
-    }).select('doctorId name specialty qualification experience rating consultationFee');
-    
-    if (doctors.length === 0) {
-      return res.status(404).json({ 
-        error: "No doctors found for this specialty",
-        specialty: specialty
-      });
-    }
-    
-    res.json({
-      specialty: specialty,
-      count: doctors.length,
-      doctors: doctors
-    });
-    
-  } catch (err) {
-    console.error('Error fetching doctors by specialty:', err);
-    res.status(500).json({ error: err.message });
-  }
+router.get('/doctors', async (req, res) => {
+  res.json(await Doctor.find({}));
 });
 
-// ========================================
-// 2. GET ALL SPECIALTIES
-// ========================================
-router.get('/specialties', async (req, res) => {
-  try {
-    const specialties = await Doctor.distinct('specialty');
-    res.json({
-      count: specialties.length,
-      specialties: specialties.sort()
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+router.post('/doctors', requireApiKey, async (req, res) => {
+  const payload = req.body;
+  if (!payload.doctorId) payload.doctorId = `D-${uuidv4().slice(0,8)}`;
+  let doc = await Doctor.findOne({ doctorId: payload.doctorId });
+  if (!doc) doc = new Doctor(payload);
+  else Object.assign(doc, payload);
+  await doc.save();
+  res.json(doc);
 });
 
-// ========================================
-// 3. GET DOCTOR AVAILABILITY FOR A DATE
-// ========================================
-router.post('/doctors/:doctorId/availability', async (req, res) => {
-  try {
-    const { date } = req.body; // Format: "2025-11-28"
-    
-    if (!date) {
-      return res.status(400).json({ error: "Date is required" });
-    }
-    
-    const doctor = await Doctor.findOne({ doctorId: req.params.doctorId });
-    
-    if (!doctor) {
-      return res.status(404).json({ error: "Doctor not found" });
-    }
-    
-    // Get day of week
-    const dayOfWeek = new Date(date).toLocaleDateString('en-US', { weekday: 'lowercase' });
-    const dayAvailability = doctor.availability[dayOfWeek];
-    
-    if (!dayAvailability || !dayAvailability.available) {
-      return res.json({
-        date,
-        doctorId: doctor.doctorId,
-        doctorName: doctor.name,
-        availableSlots: [],
-        message: "Doctor not available on this day"
-      });
-    }
-    
-    // Check Google Calendar for busy times
-    const timeMin = `${date}T00:00:00+05:30`;
-    const timeMax = `${date}T23:59:59+05:30`;
-    
-    let busyPeriods = [];
-    try {
-      const freeBusy = await getFreeBusy(doctor.calendarId, timeMin, timeMax);
-      busyPeriods = freeBusy.busy || [];
-    } catch (calErr) {
-      console.warn('Calendar check failed, showing all slots:', calErr.message);
-    }
-    
-    // Get existing appointments for this doctor on this date
-    const existingAppointments = await Appointment.find({
-      doctorId: doctor.doctorId,
-      date: date,
-      status: { $ne: 'cancelled' }
+router.post('/patients', async (req, res) => {
+  const { name, email, phone } = req.body;
+  if (!email && !phone) return res.status(400).json({ error: "email or phone required" });
+
+  let patient = await Patient.findOne({ $or: [{ email }, { phone }] });
+  if (!patient) {
+    patient = new Patient({
+      patientId: `P-${uuidv4().slice(0,8)}`,
+      name, email, phone
     });
-    
-    // Generate available slots
-    const availableSlots = generateAvailableSlots(
-      date,
-      dayAvailability.start,
-      dayAvailability.end,
-      busyPeriods,
-      existingAppointments
-    );
-    
-    res.json({
-      date,
-      doctorId: doctor.doctorId,
-      doctorName: doctor.name,
-      specialty: doctor.specialty,
-      consultationFee: doctor.consultationFee,
-      workingHours: {
-        start: dayAvailability.start,
-        end: dayAvailability.end
-      },
-      availableSlots: availableSlots,
-      totalSlots: availableSlots.length
-    });
-    
-  } catch (err) {
-    console.error('Error checking availability:', err);
-    res.status(500).json({ error: err.message });
+  } else {
+    patient.name = name || patient.name;
+    patient.phone = phone || patient.phone;
   }
+
+  await patient.save();
+  res.json(patient);
 });
 
-// ========================================
-// HELPER: GENERATE AVAILABLE SLOTS
-// ========================================
-function generateAvailableSlots(date, startTime, endTime, busyPeriods, existingAppointments) {
-  const slots = [];
-  
-  // Parse start and end times (format: "09:00")
-  const [startHour, startMinute] = startTime.split(':').map(Number);
-  const [endHour, endMinute] = endTime.split(':').map(Number);
-  
-  // Convert to minutes for easier calculation
-  let currentMinutes = startHour * 60 + startMinute;
-  const endMinutes = endHour * 60 + endMinute;
-  
-  // Generate 30-minute slots
-  while (currentMinutes + 30 <= endMinutes) {
-    const slotHour = Math.floor(currentMinutes / 60);
-    const slotMinute = currentMinutes % 60;
-    
-    const nextMinutes = currentMinutes + 30;
-    const nextHour = Math.floor(nextMinutes / 60);
-    const nextMinute = nextMinutes % 60;
-    
-    // Format times
-    const slotStart = `${slotHour.toString().padStart(2, '0')}:${slotMinute.toString().padStart(2, '0')}`;
-    const slotEnd = `${nextHour.toString().padStart(2, '0')}:${nextMinute.toString().padStart(2, '0')}`;
-    
-    // Create ISO datetime strings for checking conflicts
-    const slotStartISO = `${date}T${slotStart}:00+05:30`;
-    const slotEndISO = `${date}T${slotEnd}:00+05:30`;
-    
-    // Check if slot is available
-    const isAvailable = !isSlotConflicting(
-      slotStartISO,
-      slotEndISO,
-      busyPeriods,
-      existingAppointments
-    );
-    
-    if (isAvailable) {
-      // Format for display
-      const displayStart = formatTimeDisplay(slotHour, slotMinute);
-      const displayEnd = formatTimeDisplay(nextHour, nextMinute);
-      
-      slots.push({
-        time: `${displayStart} - ${displayEnd}`,
-        startTime: slotStart,
-        endTime: slotEnd,
-        startISO: slotStartISO,
-        endISO: slotEndISO
-      });
-    }
-    
-    currentMinutes += 30;
-  }
-  
-  return slots;
-}
+router.post('/doctors/:doctorId/freebusy', async (req, res) => {
+  const { timeMin, timeMax } = req.body;
+  const doc = await Doctor.findOne({ doctorId: req.params.doctorId });
+  if (!doc) return res.status(404).json({ error: "Doctor not found" });
 
-// ========================================
-// HELPER: FORMAT TIME FOR DISPLAY
-// ========================================
-function formatTimeDisplay(hour, minute) {
-  const period = hour >= 12 ? 'PM' : 'AM';
-  const displayHour = hour > 12 ? hour - 12 : (hour === 0 ? 12 : hour);
-  return `${displayHour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')} ${period}`;
-}
+  const fb = await getFreeBusy(doc.calendarId, timeMin, timeMax);
+  res.json(fb);
+});
 
-// ========================================
-// HELPER: CHECK SLOT CONFLICTS
-// ========================================
-function isSlotConflicting(slotStart, slotEnd, busyPeriods, existingAppointments) {
-  const slotStartTime = new Date(slotStart).getTime();
-  const slotEndTime = new Date(slotEnd).getTime();
-  
-  // Check against Google Calendar busy periods
-  for (const busy of busyPeriods) {
-    const busyStart = new Date(busy.start).getTime();
-    const busyEnd = new Date(busy.end).getTime();
-    
-    // Check for overlap
-    if (slotStartTime < busyEnd && slotEndTime > busyStart) {
-      return true;
-    }
-  }
-  
-  // Check against existing appointments
-  for (const appointment of existingAppointments) {
-    const apptStart = new Date(appointment.startDateTime).getTime();
-    const apptEnd = new Date(appointment.endDateTime).getTime();
-    
-    // Check for overlap
-    if (slotStartTime < apptEnd && slotEndTime > apptStart) {
-      return true;
-    }
-  }
-  
-  return false;
-}
-
-// ========================================
-// 4. SIMPLIFIED APPOINTMENT BOOKING
-// ========================================
-router.post('/appointments/book', requireApiKey, async (req, res) => {
+// ----------------------
+// APPOINTMENT BOOKING ROUTE (ENHANCED)
+// ----------------------
+router.post('/appointments', requireApiKey, async (req, res) => {
   try {
     const {
-      doctorId,
-      patientName,
-      patientEmail,
-      patientPhone,
-      date,
-      timeSlot, // "09:00 AM - 09:30 AM"
-      reason,
-      appointmentType = "In-Person"
+      doctorId, patientId,
+      startDateTimeISO, endDateTimeISO,
+      summary, reason,
+      appointmentType, paymentStatus,
+      doctorInstructions, attendees
     } = req.body;
-    
-    // Validate required fields
-    if (!doctorId || !patientName || !date || !timeSlot) {
-      return res.status(400).json({ 
-        error: "Missing required fields",
-        required: ["doctorId", "patientName", "date", "timeSlot"]
-      });
-    }
-    
-    if (!patientEmail && !patientPhone) {
-      return res.status(400).json({ 
-        error: "Either email or phone is required"
-      });
-    }
-    
-    // Get doctor details
+
+    if (!doctorId || !patientId || !startDateTimeISO || !endDateTimeISO)
+      return res.status(400).json({ error: "Missing required fields" });
+
     const doctor = await Doctor.findOne({ doctorId });
-    if (!doctor) {
-      return res.status(404).json({ error: "Doctor not found" });
-    }
-    
-    // Create or update patient
-    let patient = await Patient.findOne({ 
-      $or: [
-        { email: patientEmail },
-        { phone: patientPhone }
-      ]
-    });
-    
-    if (!patient) {
-      patient = new Patient({
-        patientId: `P-${uuidv4().slice(0, 8)}`,
-        name: patientName,
-        email: patientEmail,
-        phone: patientPhone
-      });
-    } else {
-      patient.name = patientName;
-      if (patientEmail) patient.email = patientEmail;
-      if (patientPhone) patient.phone = patientPhone;
-    }
-    
-    await patient.save();
-    
-    // Parse time slot
-    const timeMatch = timeSlot.match(/(\d{2}):(\d{2})\s*(AM|PM)/i);
-    if (!timeMatch) {
-      return res.status(400).json({ error: "Invalid time slot format" });
-    }
-    
-    let hour = parseInt(timeMatch[1]);
-    const minute = timeMatch[2];
-    const period = timeMatch[3].toUpperCase();
-    
-    if (period === 'PM' && hour < 12) hour += 12;
-    if (period === 'AM' && hour === 12) hour = 0;
-    
-    const startTime = `${hour.toString().padStart(2, '0')}:${minute}:00`;
-    const endHour = hour + (minute === '30' ? 1 : 0);
-    const endMinute = minute === '30' ? '00' : '30';
-    const endTime = `${endHour.toString().padStart(2, '0')}:${endMinute}:00`;
-    
-    const startDateTimeISO = `${date}T${startTime}+05:30`;
-    const endDateTimeISO = `${date}T${endTime}+05:30`;
-    
-    // Check if slot is still available
-    const conflictingAppointment = await Appointment.findOne({
-      doctorId: doctor.doctorId,
-      status: { $ne: 'cancelled' },
-      $or: [
-        {
-          startDateTime: { $lt: new Date(endDateTimeISO) },
-          endDateTime: { $gt: new Date(startDateTimeISO) }
-        }
-      ]
-    });
-    
-    if (conflictingAppointment) {
-      return res.status(409).json({ 
-        error: "This time slot is no longer available",
-        message: "Please select a different time"
-      });
-    }
-    
-    // Build description
+    if (!doctor) return res.status(404).json({ error: "Doctor not found" });
+
+    const patient = await Patient.findOne({ patientId });
+    if (!patient) return res.status(404).json({ error: "Patient not found" });
+
+    const attachmentUrl = process.env.APPOINTMENT_ATTACHMENT_URL || null;
     const { plain, html } = buildDescriptionPayload({
-      patient,
-      doctor,
-      reason,
-      appointmentType,
-      paymentStatus: 'pending',
-      doctorInstructions: '',
-      attachmentUrl: null
+      patient, doctor, reason, appointmentType, paymentStatus, doctorInstructions, attachmentUrl
     });
-    
-    // Create Google Calendar event
+
     const eventObj = {
-      summary: `Consultation - ${doctor.name}`,
+      summary: summary || `Consultation - ${doctor.name}`,
       description: plain,
-      start: { 
-        dateTime: startDateTimeISO, 
-        timeZone: doctor.timezone || 'Asia/Kolkata' 
-      },
-      end: { 
-        dateTime: endDateTimeISO, 
-        timeZone: doctor.timezone || 'Asia/Kolkata' 
-      },
+      start: { dateTime: startDateTimeISO, timeZone: doctor.timezone || 'Asia/Kolkata' },
+      end: { dateTime: endDateTimeISO, timeZone: doctor.timezone || 'Asia/Kolkata' },
       attendees: [
         ...(doctor.email ? [{ email: doctor.email }] : []),
-        ...(patient.email ? [{ email: patient.email }] : [])
+        ...(patient.email ? [{ email: patient.email }] : []),
+        ...(Array.isArray(attendees) ? attendees : [])
       ]
     };
-    
-    let googleEvent;
-    try {
-      googleEvent = await createEvent(doctor.calendarId, eventObj);
-    } catch (calErr) {
-      console.error('Google Calendar error:', calErr);
-      // Continue without calendar event
-      googleEvent = { id: 'manual-' + Date.now() };
-    }
-    
-    // Create appointment
+
+    const event = await createEvent(doctor.calendarId, eventObj);
+
     const appointment = new Appointment({
-      appointmentId: `A-${uuidv4().slice(0, 8)}`,
-      doctorId: doctor.doctorId,
-      patientId: patient.patientId,
-      date: date,
+      appointmentId: `A-${uuidv4().slice(0,8)}`,
+      doctorId,
+      patientId,
+      date: startDateTimeISO.split('T')[0],
       startDateTime: new Date(startDateTimeISO),
       endDateTime: new Date(endDateTimeISO),
-      googleEventId: googleEvent.id,
+      googleEventId: event.id,
       status: 'confirmed',
-      paymentStatus: 'pending',
-      reason: reason || 'General consultation'
+      paymentStatus: paymentStatus || 'pending'
     });
-    
+
     await appointment.save();
-    
-    // Send confirmation email
+
+    // Send confirmation email with proper error handling
     let emailStatus = null;
+    
     if (patient.email) {
       try {
         emailStatus = await sendConfirmationEmail({
           toEmail: patient.email,
-          subject: `Appointment Confirmed: ${doctor.name} on ${date}`,
+          subject: `Appointment Confirmed: ${doctor.name} on ${appointment.date}`,
           htmlBody: `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
-              <div style="background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 10px 10px 0 0;">
-                <h1 style="margin: 0;">✓ Appointment Confirmed</h1>
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+              <h2 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">Appointment Confirmation</h2>
+              <p>Hi <strong>${patient.name}</strong>,</p>
+              <p>Your appointment has been successfully confirmed with <strong>${doctor.name}</strong>.</p>
+              ${html}
+              <div style="margin-top: 30px; text-align: center;">
+                <a href="${event.htmlLink}" target="_blank" 
+                   style="background-color: #3498db; color: white; padding: 12px 24px; 
+                          text-decoration: none; border-radius: 5px; display: inline-block; 
+                          font-weight: bold;">
+                  View in Google Calendar
+                </a>
               </div>
-              
-              <div style="background-color: white; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
-                <p style="font-size: 16px;">Dear <strong>${patient.name}</strong>,</p>
-                
-                <p>Your appointment has been successfully confirmed!</p>
-                
-                <div style="background-color: #f0f0f0; padding: 20px; border-radius: 8px; margin: 20px 0;">
-                  <h3 style="margin-top: 0; color: #333;">Appointment Details</h3>
-                  <table style="width: 100%; border-collapse: collapse;">
-                    <tr>
-                      <td style="padding: 8px 0;"><strong>Doctor:</strong></td>
-                      <td style="padding: 8px 0;">${doctor.name}</td>
-                    </tr>
-                    <tr>
-                      <td style="padding: 8px 0;"><strong>Specialty:</strong></td>
-                      <td style="padding: 8px 0;">${doctor.specialty}</td>
-                    </tr>
-                    <tr>
-                      <td style="padding: 8px 0;"><strong>Date:</strong></td>
-                      <td style="padding: 8px 0;">${date}</td>
-                    </tr>
-                    <tr>
-                      <td style="padding: 8px 0;"><strong>Time:</strong></td>
-                      <td style="padding: 8px 0;">${timeSlot}</td>
-                    </tr>
-                    <tr>
-                      <td style="padding: 8px 0;"><strong>Appointment ID:</strong></td>
-                      <td style="padding: 8px 0;">${appointment.appointmentId}</td>
-                    </tr>
-                    <tr>
-                      <td style="padding: 8px 0;"><strong>Consultation Fee:</strong></td>
-                      <td style="padding: 8px 0;">₹${doctor.consultationFee}</td>
-                    </tr>
-                  </table>
-                </div>
-                
-                <div style="background-color: #fff3cd; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;">
-                  <p style="margin: 0;"><strong>Important Reminders:</strong></p>
-                  <ul style="margin: 10px 0 0 0; padding-left: 20px;">
-                    <li>Please arrive 10 minutes before your scheduled time</li>
-                    <li>Bring any relevant medical records or test results</li>
-                    <li>Bring a valid ID proof</li>
-                    <li>Bring your prescription if this is a follow-up visit</li>
-                  </ul>
-                </div>
-                
-                ${googleEvent.htmlLink ? `
-                <div style="text-align: center; margin: 30px 0;">
-                  <a href="${googleEvent.htmlLink}" target="_blank" 
-                     style="background-color: #4CAF50; color: white; padding: 12px 30px; 
-                            text-decoration: none; border-radius: 5px; display: inline-block; 
-                            font-weight: bold;">
-                    Add to Google Calendar
-                  </a>
-                </div>
-                ` : ''}
-                
-                <hr style="margin: 30px 0; border: none; border-top: 1px solid #e0e0e0;">
-                
-                <p style="color: #666; font-size: 13px; text-align: center; margin: 0;">
-                  This is an automated message from Medicare AI Bot.<br>
-                  For any queries, please contact: support@hospital.com<br>
-                  <br>
-                  Thank you for choosing our healthcare services!
-                </p>
-              </div>
+              <hr style="margin: 30px 0; border: none; border-top: 1px solid #e0e0e0;">
+              <p style="color: #7f8c8d; font-size: 12px; text-align: center;">
+                This is an automated message from Medicare AI Bot.<br>
+                Please do not reply to this email.
+              </p>
             </div>
           `,
-          textBody: `
-Appointment Confirmed
-
-Dear ${patient.name},
-
-Your appointment has been successfully confirmed!
-
-APPOINTMENT DETAILS:
-Doctor: ${doctor.name}
-Specialty: ${doctor.specialty}
-Date: ${date}
-Time: ${timeSlot}
-Appointment ID: ${appointment.appointmentId}
-Consultation Fee: ₹${doctor.consultationFee}
-
-IMPORTANT REMINDERS:
-- Please arrive 10 minutes before your scheduled time
-- Bring any relevant medical records or test results
-- Bring a valid ID proof
-- Bring your prescription if this is a follow-up visit
-
-${googleEvent.htmlLink ? `\nAdd to Calendar: ${googleEvent.htmlLink}` : ''}
-
----
-This is an automated message from Medicare AI Bot.
-For any queries, please contact: support@hospital.com
-
-Thank you for choosing our healthcare services!
-          `
+          textBody: `Hi ${patient.name},\n\nYour appointment has been successfully confirmed with ${doctor.name}.\n\n${plain}\n\nView in Google Calendar: ${event.htmlLink}\n\n---\nThis is an automated message from Medicare AI Bot. Please do not reply to this email.`
         });
+        
+        console.log('Confirmation email sent to:', patient.email);
+        
       } catch (mailErr) {
-        console.error("Email send failed:", mailErr);
+        console.error("Email send failed:", mailErr.message);
         emailStatus = { error: mailErr.message };
       }
+    } else {
+      console.warn('Patient email not provided; skipping email notification');
+      emailStatus = { skipped: true, reason: 'No patient email' };
     }
-    
-    // Return success response
-    res.json({
+
+    res.json({ 
       success: true,
-      message: "Appointment booked successfully",
-      appointment: {
-        appointmentId: appointment.appointmentId,
-        doctorName: doctor.name,
-        specialty: doctor.specialty,
-        date: date,
-        time: timeSlot,
-        patientName: patient.name,
-        status: appointment.status,
-        consultationFee: doctor.consultationFee
-      },
-      patient: {
-        patientId: patient.patientId,
-        name: patient.name,
-        email: patient.email,
-        phone: patient.phone
-      },
-      emailStatus,
-      calendarEvent: googleEvent.htmlLink ? {
-        link: googleEvent.htmlLink
-      } : null
+      appointment, 
+      event,
+      emailStatus
     });
-    
+
   } catch (err) {
     console.error("Appointment booking error:", err);
-    res.status(500).json({ 
-      error: err.message || "Failed to book appointment",
-      details: err.toString()
-    });
+    res.status(500).json({ error: err.message || err.toString() });
   }
 });
 
-// ========================================
-// 5. SEARCH PATIENTS (for existing patient lookup)
-// ========================================
-router.get('/patients/search', async (req, res) => {
-  try {
-    const { email, phone } = req.query;
-    
-    if (!email && !phone) {
-      return res.status(400).json({ error: "Email or phone required" });
-    }
-    
-    const patient = await Patient.findOne({
-      $or: [
-        ...(email ? [{ email }] : []),
-        ...(phone ? [{ phone }] : [])
-      ]
-    });
-    
-    if (!patient) {
-      return res.status(404).json({ error: "Patient not found" });
-    }
-    
-    res.json(patient);
-    
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// ----------------------
+// OTHER ROUTES
+// ----------------------
+router.get('/appointments/patient/:patientId', async (req, res) => {
+  res.json(await Appointment.find({ patientId: req.params.patientId }));
 });
 
-// ========================================
-// 6. CANCEL APPOINTMENT
-// ========================================
-router.post('/appointments/:appointmentId/cancel', requireApiKey, async (req, res) => {
-  try {
-    const appointment = await Appointment.findOne({ 
-      appointmentId: req.params.appointmentId 
-    });
-    
-    if (!appointment) {
-      return res.status(404).json({ error: "Appointment not found" });
-    }
-    
-    appointment.status = 'cancelled';
-    await appointment.save();
-    
-    // TODO: Cancel Google Calendar event
-    
-    res.json({
-      success: true,
-      message: "Appointment cancelled successfully",
-      appointmentId: appointment.appointmentId
-    });
-    
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+router.get('/calendars', async (req, res) => {
+  res.json(await listCalendars());
 });
 
-// ========================================
-// 7. GET PATIENT APPOINTMENTS
-// ========================================
-router.get('/patients/:patientId/appointments', async (req, res) => {
-  try {
-    const appointments = await Appointment.find({ 
-      patientId: req.params.patientId 
-    }).sort({ startDateTime: -1 });
-    
-    // Enrich with doctor details
-    const enrichedAppointments = await Promise.all(
-      appointments.map(async (appt) => {
-        const doctor = await Doctor.findOne({ doctorId: appt.doctorId });
-        return {
-          ...appt.toObject(),
-          doctorName: doctor ? doctor.name : 'Unknown',
-          doctorSpecialty: doctor ? doctor.specialty : 'Unknown'
-        };
-      })
-    );
-    
-    res.json({
-      patientId: req.params.patientId,
-      count: enrichedAppointments.length,
-      appointments: enrichedAppointments
-    });
-    
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-// Export the router
-
+// ----------------------
 module.exports = router;
+
+// ---------------------------------------------------------
+// GET ALL APPOINTMENTS
+// ---------------------------------------------------------
+router.get('/appointments', async (req, res) => {
+  try {
+    const appointments = await Appointment.find({}).sort({ startDateTime: 1 });
+    res.json(appointments);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get available time slots for a doctor on a specific date
+router.post('/doctors/:doctorId/available-slots', async (req, res) => {
+  try {
+    const { date } = req.body; // Expected format: "2025-11-28"
+    
+    const doctor = await Doctor.findOne({ doctorId: req.params.doctorId });
+    if (!doctor) return res.status(404).json({ error: "Doctor not found" });
+
+    // Define working hours
+    const workingHours = {
+      start: 9, // 9 AM
+      end: 17,  // 5 PM
+      slotDuration: 60 // 60 minutes per slot
+    };
+
+    // Get busy times from Google Calendar
+    const startOfDay = `${date}T00:00:00+05:30`;
+    const endOfDay = `${date}T23:59:59+05:30`;
+    
+    const freeBusy = await getFreeBusy(doctor.calendarId, startOfDay, endOfDay);
+    const busySlots = freeBusy.calendars[doctor.calendarId]?.busy || [];
+
+    // Generate all possible slots
+    const availableSlots = [];
+    for (let hour = workingHours.start; hour < workingHours.end; hour++) {
+      const slotStart = new Date(`${date}T${hour.toString().padStart(2, '0')}:00:00+05:30`);
+      const slotEnd = new Date(slotStart.getTime() + workingHours.slotDuration * 60000);
+
+      // Check if slot overlaps with any busy time
+      const isAvailable = !busySlots.some(busy => {
+        const busyStart = new Date(busy.start);
+        const busyEnd = new Date(busy.end);
+        return (slotStart < busyEnd && slotEnd > busyStart);
+      });
+
+      if (isAvailable) {
+        const timeStr = slotStart.toLocaleTimeString('en-US', { 
+          hour: '2-digit', 
+          minute: '2-digit',
+          hour12: true 
+        });
+        availableSlots.push(timeStr);
+      }
+    }
+
+    res.json({ 
+      success: true, 
+      date, 
+      slots: availableSlots 
+    });
+
+  } catch (err) {
+    console.error("Error fetching available slots:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// GET ONE APPOINTMENT BY ID
+// ---------------------------------------------------------
+router.get('/appointments/:appointmentId', async (req, res) => {
+  try {
+    const ap = await Appointment.findOne({ appointmentId: req.params.appointmentId });
+    if (!ap) return res.status(404).json({ error: "Appointment not found" });
+    res.json(ap);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// GET APPOINTMENTS FOR A DOCTOR
+// ---------------------------------------------------------
+router.get('/appointments/doctor/:doctorId', async (req, res) => {
+  try {
+    const ap = await Appointment.find({ doctorId: req.params.doctorId }).sort({ startDateTime: 1 });
+    res.json(ap);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// GET TODAY'S APPOINTMENTS
+// ---------------------------------------------------------
+router.get('/appointments-today', async (req, res) => {
+  try {
+    const today = new Date().toISOString().split("T")[0];
+    const ap = await Appointment.find({ date: today }).sort({ startDateTime: 1 });
+    res.json(ap);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// GET UPCOMING APPOINTMENTS
+// ---------------------------------------------------------
+router.get('/appointments-upcoming', async (req, res) => {
+  try {
+    const now = new Date();
+    const ap = await Appointment.find({ startDateTime: { $gte: now } }).sort({ startDateTime: 1 });
+    res.json(ap);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// CRUD FOR DOCTORS
+// ---------------------------------------------------------
+router.get('/doctor/:doctorId', async (req, res) => {
+  const doc = await Doctor.findOne({ doctorId: req.params.doctorId });
+  if (!doc) return res.status(404).json({ error: "Doctor not found" });
+  res.json(doc);
+});
+
+router.put('/doctor/:doctorId', requireApiKey, async (req, res) => {
+  try {
+    const updated = await Doctor.findOneAndUpdate(
+      { doctorId: req.params.doctorId },
+      req.body,
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: "Doctor not found" });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/doctor/:doctorId', requireApiKey, async (req, res) => {
+  try {
+    const deleted = await Doctor.findOneAndDelete({ doctorId: req.params.doctorId });
+    if (!deleted) return res.status(404).json({ error: "Doctor not found" });
+    res.json({ success: true, doctorId: req.params.doctorId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// CRUD FOR PATIENTS
+// ---------------------------------------------------------
+router.get('/patient/:patientId', async (req, res) => {
+  const p = await Patient.findOne({ patientId: req.params.patientId });
+  if (!p) return res.status(404).json({ error: "Patient not found" });
+  res.json(p);
+});
+
+router.put('/patient/:patientId', async (req, res) => {
+  try {
+    const updated = await Patient.findOneAndUpdate(
+      { patientId: req.params.patientId },
+      req.body,
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: "Patient not found" });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/patient/:patientId', async (req, res) => {
+  try {
+    const deleted = await Patient.findOneAndDelete({ patientId: req.params.patientId });
+    if (!deleted) return res.status(404).json({ error: "Patient not found" });
+
+    res.json({ success: true, patientId: req.params.patientId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// DELETE / CANCEL APPOINTMENT
+// ---------------------------------------------------------
+router.delete('/appointments/:appointmentId', requireApiKey, async (req, res) => {
+  try {
+    const deleted = await Appointment.findOneAndDelete({ appointmentId: req.params.appointmentId });
+    if (!deleted) return res.status(404).json({ error: "Appointment not found" });
+
+    res.json({ success: true, appointmentId: req.params.appointmentId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// GET ALL APPOINTMENTS
+// ---------------------------------------------------------
+router.get('/appointments', async (req, res) => {
+  try {
+    const appointments = await Appointment.find({}).sort({ startDateTime: 1 });
+    res.json(appointments);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// GET ONE APPOINTMENT BY ID
+// ---------------------------------------------------------
+router.get('/appointments/:appointmentId', async (req, res) => {
+  try {
+    const ap = await Appointment.findOne({ appointmentId: req.params.appointmentId });
+    if (!ap) return res.status(404).json({ error: "Appointment not found" });
+    res.json(ap);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// GET APPOINTMENTS FOR A DOCTOR
+// ---------------------------------------------------------
+router.get('/appointments/doctor/:doctorId', async (req, res) => {
+  try {
+    const ap = await Appointment.find({ doctorId: req.params.doctorId }).sort({ startDateTime: 1 });
+    res.json(ap);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// GET TODAY'S APPOINTMENTS
+// ---------------------------------------------------------
+router.get('/appointments-today', async (req, res) => {
+  try {
+    const today = new Date().toISOString().split("T")[0];
+    const ap = await Appointment.find({ date: today }).sort({ startDateTime: 1 });
+    res.json(ap);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// GET UPCOMING APPOINTMENTS
+// ---------------------------------------------------------
+router.get('/appointments-upcoming', async (req, res) => {
+  try {
+    const now = new Date();
+    const ap = await Appointment.find({ startDateTime: { $gte: now } }).sort({ startDateTime: 1 });
+    res.json(ap);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// CRUD FOR DOCTORS
+// ---------------------------------------------------------
+router.get('/doctor/:doctorId', async (req, res) => {
+  const doc = await Doctor.findOne({ doctorId: req.params.doctorId });
+  if (!doc) return res.status(404).json({ error: "Doctor not found" });
+  res.json(doc);
+});
+
+router.put('/doctor/:doctorId', requireApiKey, async (req, res) => {
+  try {
+    const updated = await Doctor.findOneAndUpdate(
+      { doctorId: req.params.doctorId },
+      req.body,
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: "Doctor not found" });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/doctor/:doctorId', requireApiKey, async (req, res) => {
+  try {
+    const deleted = await Doctor.findOneAndDelete({ doctorId: req.params.doctorId });
+    if (!deleted) return res.status(404).json({ error: "Doctor not found" });
+    res.json({ success: true, doctorId: req.params.doctorId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// CRUD FOR PATIENTS
+// ---------------------------------------------------------
+router.get('/patient/:patientId', async (req, res) => {
+  const p = await Patient.findOne({ patientId: req.params.patientId });
+  if (!p) return res.status(404).json({ error: "Patient not found" });
+  res.json(p);
+});
+
+router.put('/patient/:patientId', async (req, res) => {
+  try {
+    const updated = await Patient.findOneAndUpdate(
+      { patientId: req.params.patientId },
+      req.body,
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ error: "Patient not found" });
+    res.json(updated);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/patients', async (req, res) => {
+  const patients = await Patient.find({}).sort({ name: 1 });
+  res.json(patients);
+});
+
+router.delete('/patient/:patientId', async (req, res) => {
+  try {
+    const deleted = await Patient.findOneAndDelete({ patientId: req.params.patientId });
+    if (!deleted) return res.status(404).json({ error: "Patient not found" });
+
+    res.json({ success: true, patientId: req.params.patientId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------------------------------------------------
+// DELETE / CANCEL APPOINTMENT
+// ---------------------------------------------------------
+router.delete('/appointments/:appointmentId', requireApiKey, async (req, res) => {
+  try {
+    const deleted = await Appointment.findOneAndDelete({ appointmentId: req.params.appointmentId });
+    if (!deleted) return res.status(404).json({ error: "Appointment not found" });
+
+    res.json({ success: true, appointmentId: req.params.appointmentId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+module.exports = router;
+
+// // ========================================
+// // TWILIO SMS WEBHOOK
+// // ========================================
+// const twilio = require('twilio');
+// router.use(express.urlencoded({ extended: false }));
+
+// router.post('/twilio-webhook', (req, res) => {
+//   const incomingMsg = req.body.Body;
+//   const from = req.body.From;
+
+//   console.log("📩 SMS Received from:", from);
+//   console.log("Message:", incomingMsg);
+
+//   const twiml = new twilio.twiml.MessagingResponse();
+//   twiml.message(`Thanks for messaging Medicare! You said: "${incomingMsg}".`);
+
+//   res.writeHead(200, { 'Content-Type': 'text/xml' });
+//   res.end(twiml.toString());
+// });
+
