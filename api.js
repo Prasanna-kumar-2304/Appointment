@@ -224,24 +224,42 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
       return res.status(404).json({ error: "Doctor not found" });
     }
     
+    // Parse the date and get day of week FIRST (before checking availability)
+    const dateObj = new Date(date + 'T00:00:00');
+    const dayOfWeek = dateObj.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
+    
+    console.log('=== AVAILABILITY DEBUG ===');
+    console.log('Date requested:', date);
+    console.log('Day of week:', dayOfWeek);
+    console.log('Doctor object:', JSON.stringify(doctor, null, 2));
+    console.log('Availability field exists?', !!doctor.availability);
+    console.log('Availability type:', typeof doctor.availability);
+    
     // Check if doctor has availability data
     if (!doctor.availability || typeof doctor.availability !== 'object') {
       return res.status(400).json({ 
         error: "Doctor availability schedule not configured",
         doctorId: doctor.doctorId,
-        doctorName: doctor.name
+        doctorName: doctor.name,
+        debug: {
+          availabilityExists: !!doctor.availability,
+          availabilityType: typeof doctor.availability
+        }
       });
     }
     
-    // Parse the date and get day of week
-    const dateObj = new Date(date + 'T00:00:00');
-    const dayOfWeek = dateObj.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
-    
-    console.log('Date requested:', date);
-    console.log('Day of week:', dayOfWeek);
     console.log('Doctor availability keys:', Object.keys(doctor.availability));
+    console.log('Availability for', dayOfWeek, ':', doctor.availability[dayOfWeek]);
     
-    const dayAvailability = doctor.availability[dayOfWeek];
+    // Try to get the day availability - handle both direct object and Mongoose subdocuments
+    let dayAvailability = doctor.availability[dayOfWeek];
+    
+    // If it's a Mongoose object, convert to plain object
+    if (dayAvailability && dayAvailability.toObject) {
+      dayAvailability = dayAvailability.toObject();
+    }
+    
+    console.log('Day availability (processed):', dayAvailability);
     
     // Check if this day exists in the schedule
     if (!dayAvailability) {
@@ -429,7 +447,6 @@ function isSlotConflicting(slotStart, slotEnd, busyPeriods, existingAppointments
   
   return false;
 }
-
 // ========================================
 // 4. SIMPLIFIED APPOINTMENT BOOKING
 // ========================================
@@ -825,6 +842,7 @@ router.get('/patients/:patientId/appointments', async (req, res) => {
 });
 // Export the router
 module.exports = router;
+
 
 
 
