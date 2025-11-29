@@ -3,9 +3,9 @@ const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const nodemailer = require('nodemailer');
 
-const Doctor = require('../models/Doctor');
-const Patient = require('../models/Patient');
-const Appointment = require('../models/Appointment');
+const Doctor = require('./Doctor');
+const Patient = require('./Patient');
+const Appointment = require('./Appointment');
 
 const { getFreeBusy, createEvent, listCalendars } = require('../lib/google');
 
