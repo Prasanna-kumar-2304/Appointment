@@ -202,9 +202,6 @@ router.get('/specialties', async (req, res) => {
 // ========================================
 // 3. GET DOCTOR AVAILABILITY FOR A DATE
 // ========================================
-// ========================================
-// 3. GET DOCTOR AVAILABILITY FOR A DATE
-// ========================================
 router.post('/doctors/:doctorId/availability', async (req, res) => {
   try {
     const { date } = req.body;
@@ -217,6 +214,15 @@ router.post('/doctors/:doctorId/availability', async (req, res) => {
     
     if (!doctor) {
       return res.status(404).json({ error: "Doctor not found" });
+    }
+    
+    // Check if doctor has availability data
+    if (!doctor.availability || typeof doctor.availability !== 'object') {
+      return res.status(400).json({ 
+        error: "Doctor availability schedule not configured",
+        doctorId: doctor.doctorId,
+        doctorName: doctor.name
+      });
     }
     
     // FIX: Use 'long' option and then convert to lowercase
@@ -776,6 +782,7 @@ router.get('/patients/:patientId/appointments', async (req, res) => {
 });
 // Export the router
 module.exports = router;
+
 
 
 
