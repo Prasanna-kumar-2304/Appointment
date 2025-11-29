@@ -5,7 +5,7 @@ const nodemailer = require('nodemailer');
 
 const Doctor = require('./Doctor');
 const Patient = require('./Patient');
-const Appointment = require('./appointment');
+const Appointment = require('./Appointment');
 
 const { getFreeBusy, createEvent, listCalendars } = require('./google');
 
@@ -775,3 +775,4 @@ router.get('/patients/:patientId/appointments', async (req, res) => {
 });
 // Export the router
 module.exports = router;
+
