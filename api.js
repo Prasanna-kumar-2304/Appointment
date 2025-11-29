@@ -7,7 +7,7 @@ const Doctor = require('./Doctor');
 const Patient = require('./Patient');
 const Appointment = require('./Appointment');
 
-const { getFreeBusy, createEvent, listCalendars } = require('../lib/google');
+const { getFreeBusy, createEvent, listCalendars } = require('./google');
 
 // ----------------------
 // Middleware
@@ -685,4 +685,5 @@ module.exports = router;
 //   res.writeHead(200, { 'Content-Type': 'text/xml' });
 //   res.end(twiml.toString());
 // });
+
 
