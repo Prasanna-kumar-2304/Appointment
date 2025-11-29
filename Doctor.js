@@ -1,18 +1,39 @@
+// Doctor.js - Mongoose Schema
 const mongoose = require('mongoose');
 
-const DoctorSchema = new mongoose.Schema({
-  doctorId: { type: String, unique: true, required: true },
-  name: String,
-  specialization: String,
-  location: String,
-  email: String,
-  phone: String,
-  calendarId: String, // Google Calendar ID
-  timezone: { type: String, default: 'Asia/Kolkata' },
-  workingHours: {
-    start: String, // "09:00"
-    end: String    // "17:00"
-  }
-}, { timestamps: true });
+// Define the availability sub-schema
+const availabilitySchema = new mongoose.Schema({
+  available: { type: Boolean, required: true },
+  start: { type: String },
+  end: { type: String }
+}, { _id: false });
 
-module.exports = mongoose.model('Doctor', DoctorSchema);
+const doctorSchema = new mongoose.Schema({
+  doctorId: { type: String, required: true, unique: true },
+  name: { type: String, required: true },
+  email: { type: String },
+  phone: { type: String },
+  specialty: { type: String, required: true },
+  qualification: { type: String },
+  experience: { type: Number },
+  consultationFee: { type: Number },
+  rating: { type: Number },
+  calendarId: { type: String },
+  timezone: { type: String, default: 'Asia/Kolkata' },
+  
+  // Properly define the availability object
+  availability: {
+    monday: { type: availabilitySchema, default: { available: false } },
+    tuesday: { type: availabilitySchema, default: { available: false } },
+    wednesday: { type: availabilitySchema, default: { available: false } },
+    thursday: { type: availabilitySchema, default: { available: false } },
+    friday: { type: availabilitySchema, default: { available: false } },
+    saturday: { type: availabilitySchema, default: { available: false } },
+    sunday: { type: availabilitySchema, default: { available: false } }
+  }
+}, { 
+  timestamps: true,
+  strict: false // This allows flexibility but maintain structure for availability
+});
+
+module.exports = mongoose.model('Doctor', doctorSchema);
