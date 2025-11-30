@@ -450,15 +450,21 @@ function isSlotConflicting(slotStart, slotEnd, busyPeriods, existingAppointments
 // ========================================
 // 4. SIMPLIFIED APPOINTMENT BOOKING
 // ========================================
+// ========================================
+// 4. FIXED APPOINTMENT BOOKING
+// Replace your existing booking endpoint with this
+// ========================================
 router.post('/appointments/book', requireApiKey, async (req, res) => {
   try {
     const {
       doctorId,
+      doctorName,        // ✅ Added
+      doctorSpecialty,   // ✅ Added
       patientName,
       patientEmail,
       patientPhone,
       date,
-      timeSlot, // "09:00 AM - 09:30 AM"
+      timeSlot,
       reason,
       appointmentType = "In-Person"
     } = req.body;
@@ -498,18 +504,19 @@ router.post('/appointments/book', requireApiKey, async (req, res) => {
         email: patientEmail,
         phone: patientPhone
       });
+      await patient.save();
     } else {
+      // Update existing patient info
       patient.name = patientName;
       if (patientEmail) patient.email = patientEmail;
       if (patientPhone) patient.phone = patientPhone;
+      await patient.save();
     }
     
-    await patient.save();
-    
-    // Parse time slot
+    // Parse time slot to get start and end times
     const timeMatch = timeSlot.match(/(\d{2}):(\d{2})\s*(AM|PM)/i);
     if (!timeMatch) {
-      return res.status(400).json({ error: "Invalid time slot format" });
+      return res.status(400).json({ error: "Invalid time slot format. Use format: '09:00 AM - 09:30 AM'" });
     }
     
     let hour = parseInt(timeMatch[1]);
@@ -546,7 +553,7 @@ router.post('/appointments/book', requireApiKey, async (req, res) => {
       });
     }
     
-    // Build description
+    // Build description for calendar
     const { plain, html } = buildDescriptionPayload({
       patient,
       doctor,
@@ -575,30 +582,37 @@ router.post('/appointments/book', requireApiKey, async (req, res) => {
       ]
     };
     
-    let googleEvent;
+    let googleEvent = { id: 'manual-' + Date.now() };
     try {
       googleEvent = await createEvent(doctor.calendarId, eventObj);
+      console.log('✅ Google Calendar event created:', googleEvent.id);
     } catch (calErr) {
-      console.error('Google Calendar error:', calErr);
-      // Continue without calendar event
-      googleEvent = { id: 'manual-' + Date.now() };
+      console.error('⚠️ Google Calendar error (continuing):', calErr.message);
     }
     
-    // Create appointment
+    // ✅ CREATE APPOINTMENT WITH ALL REQUIRED FIELDS
     const appointment = new Appointment({
       appointmentId: `A-${uuidv4().slice(0, 8)}`,
       doctorId: doctor.doctorId,
+      doctorName: doctorName || doctor.name,           // ✅ Required field
+      doctorSpecialty: doctorSpecialty || doctor.specialty,  // ✅ Required field
       patientId: patient.patientId,
-      date: date,
+      patientName: patientName,                         // ✅ Required field
+      patientEmail: patientEmail,                       // ✅ Required field
+      patientPhone: patientPhone,
+      date: date,                                       // ✅ Required field
+      timeSlot: timeSlot,                              // ✅ Required field
       startDateTime: new Date(startDateTimeISO),
       endDateTime: new Date(endDateTimeISO),
       googleEventId: googleEvent.id,
       status: 'confirmed',
-      paymentStatus: 'pending',
-      reason: reason || 'General consultation'
+      paymentStatus: 'pending'
+      // ❌ Removed 'reason' field as it's not in schema
     });
     
+    // Save to MongoDB
     await appointment.save();
+    console.log('✅ Appointment saved to MongoDB:', appointment.appointmentId);
     
     // Send confirmation email
     let emailStatus = null;
@@ -648,6 +662,13 @@ router.post('/appointments/book', requireApiKey, async (req, res) => {
                   </table>
                 </div>
                 
+                ${reason ? `
+                <div style="background-color: #e3f2fd; padding: 15px; border-radius: 8px; margin: 20px 0;">
+                  <p style="margin: 0;"><strong>Reason for Visit:</strong></p>
+                  <p style="margin: 10px 0 0 0;">${reason}</p>
+                </div>
+                ` : ''}
+                
                 <div style="background-color: #fff3cd; padding: 15px; border-radius: 8px; margin: 20px 0; border-left: 4px solid #ffc107;">
                   <p style="margin: 0;"><strong>Important Reminders:</strong></p>
                   <ul style="margin: 10px 0 0 0; padding-left: 20px;">
@@ -695,13 +716,15 @@ Time: ${timeSlot}
 Appointment ID: ${appointment.appointmentId}
 Consultation Fee: ₹${doctor.consultationFee}
 
+${reason ? `REASON FOR VISIT:\n${reason}\n\n` : ''}
+
 IMPORTANT REMINDERS:
 - Please arrive 10 minutes before your scheduled time
 - Bring any relevant medical records or test results
 - Bring a valid ID proof
 - Bring your prescription if this is a follow-up visit
 
-${googleEvent.htmlLink ? `\nAdd to Calendar: ${googleEvent.htmlLink}` : ''}
+${googleEvent.htmlLink ? `Add to Calendar: ${googleEvent.htmlLink}\n\n` : ''}
 
 ---
 This is an automated message from Medicare AI Bot.
@@ -710,8 +733,9 @@ For any queries, please contact: support@hospital.com
 Thank you for choosing our healthcare services!
           `
         });
+        console.log('✅ Email sent successfully');
       } catch (mailErr) {
-        console.error("Email send failed:", mailErr);
+        console.error("⚠️ Email send failed:", mailErr);
         emailStatus = { error: mailErr.message };
       }
     }
@@ -739,18 +763,18 @@ Thank you for choosing our healthcare services!
       emailStatus,
       calendarEvent: googleEvent.htmlLink ? {
         link: googleEvent.htmlLink
-      } : null
+      } : null,
+      savedToDatabase: true  // ✅ Confirmation flag
     });
     
   } catch (err) {
-    console.error("Appointment booking error:", err);
+    console.error("❌ Appointment booking error:", err);
     res.status(500).json({ 
       error: err.message || "Failed to book appointment",
-      details: err.toString()
+      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
   }
 });
-
 // ========================================
 // 5. SEARCH PATIENTS (for existing patient lookup)
 // ========================================
@@ -943,5 +967,6 @@ router.get('/appointments/email/:email', async (req, res) => {
 
 // Export the router
 module.exports = router;
+
 
 
