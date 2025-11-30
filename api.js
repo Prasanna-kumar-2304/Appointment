@@ -1046,6 +1046,153 @@ router.post('/appointments/:id/cancel', requireApiKey, async (req, res) => {
   }
 });
 
+router.post('/appointments/:appointmentId/reschedule', requireApiKey, async (req, res) => {
+  try {
+    const appointmentId = req.params.appointmentId;
+    const { date, timeSlot } = req.body;
+
+    console.log('=== RESCHEDULING APPOINTMENT ===');
+    console.log('Appointment ID:', appointmentId);
+    console.log('New Date:', date);
+    console.log('New Time:', timeSlot);
+
+    if (!date || !timeSlot) {
+      return res.status(400).json({
+        success: false,
+        error: 'Date and time slot are required'
+      });
+    }
+
+    const appointment = await Appointment.findOne({ appointmentId });
+    if (!appointment) {
+      return res.status(404).json({
+        success: false,
+        error: 'Appointment not found'
+      });
+    }
+
+    const doctor = await Doctor.findOne({ doctorId: appointment.doctorId });
+    if (!doctor) {
+      return res.status(404).json({
+        success: false,
+        error: 'Doctor not found'
+      });
+    }
+
+    const timeMatch = timeSlot.match(/(\d{2}):(\d{2})\s*(AM|PM)/i);
+    if (!timeMatch) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid time slot format'
+      });
+    }
+
+    let hour = parseInt(timeMatch[1]);
+    const minute = timeMatch[2];
+    const period = timeMatch[3].toUpperCase();
+
+    if (period === 'PM' && hour < 12) hour += 12;
+    if (period === 'AM' && hour === 12) hour = 0;
+
+    const startTime = `${hour.toString().padStart(2, '0')}:${minute}:00`;
+    const endHour = hour + (minute === '30' ? 1 : 0);
+    const endMinute = minute === '30' ? '00' : '30';
+    const endTime = `${endHour.toString().padStart(2, '0')}:${endMinute}:00`;
+
+    const startDateTimeISO = `${date}T${startTime}+05:30`;
+    const endDateTimeISO = `${date}T${endTime}+05:30`;
+
+    const conflictingAppointment = await Appointment.findOne({
+      appointmentId: { $ne: appointmentId },
+      doctorId: doctor.doctorId,
+      status: { $ne: 'cancelled' },
+      $or: [
+        {
+          startDateTime: { $lt: new Date(endDateTimeISO) },
+          endDateTime: { $gt: new Date(startDateTimeISO) }
+        }
+      ]
+    });
+
+    if (conflictingAppointment) {
+      return res.status(409).json({
+        success: false,
+        error: 'This time slot is no longer available',
+        message: 'Please select a different time'
+      });
+    }
+
+    let calendarUpdateSuccess = false;
+    if (appointment.googleEventId) {
+      try {
+        const auth = getOAuth2Client();
+        const calendar = google.calendar({ version: 'v3', auth });
+        const calendarId = doctor.calendarId || 'primary';
+
+        const existingEvent = await calendar.events.get({
+          calendarId,
+          eventId: appointment.googleEventId
+        });
+
+        await calendar.events.update({
+          calendarId,
+          eventId: appointment.googleEventId,
+          requestBody: {
+            ...existingEvent.data,
+            start: {
+              dateTime: startDateTimeISO,
+              timeZone: doctor.timezone || 'Asia/Kolkata'
+            },
+            end: {
+              dateTime: endDateTimeISO,
+              timeZone: doctor.timezone || 'Asia/Kolkata'
+            },
+            summary: `Consultation - ${doctor.name} (Rescheduled)`
+          },
+          sendUpdates: 'externalOnly'
+        });
+
+        console.log('Google Calendar event updated');
+        calendarUpdateSuccess = true;
+      } catch (calError) {
+        console.error('Calendar update error:', calError.message);
+      }
+    }
+
+    appointment.date = date;
+    appointment.timeSlot = timeSlot;
+    appointment.startDateTime = new Date(startDateTimeISO);
+    appointment.endDateTime = new Date(endDateTimeISO);
+    await appointment.save();
+
+    console.log('Appointment rescheduled in database');
+
+    res.json({
+      success: true,
+      message: 'Appointment rescheduled successfully',
+      appointment: {
+        appointmentId: appointment.appointmentId,
+        doctorName: doctor.name,
+        date,
+        timeSlot,
+        status: appointment.status
+      },
+      details: {
+        updatedInDatabase: true,
+        updatedInCalendar: calendarUpdateSuccess
+      }
+    });
+
+  } catch (error) {
+    console.error('Reschedule error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 // Export the router
 module.exports = router;
+
 
