@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const nodemailer = require('nodemailer');
 const { google } = require('googleapis');
@@ -161,6 +162,7 @@ router.post('/auth/request-otp', async (req, res) => {
     // Validate input
     if (!email || !name) {
       return res.status(400).json({ 
+        success: false,
         error: "Email and name are required",
         required: ["email", "name"]
       });
@@ -170,6 +172,7 @@ router.post('/auth/request-otp', async (req, res) => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
       return res.status(400).json({ 
+        success: false,
         error: "Invalid email format"
       });
     }
@@ -177,10 +180,12 @@ router.post('/auth/request-otp', async (req, res) => {
     // Check if patient already exists
     const existingPatient = await Patient.findOne({ email });
     if (existingPatient) {
-      return res. status(409).json({ 
+      return res.status(409).json({ 
+        success: false,
         error: "Email already registered",
         message: "This email is already associated with an account",
-        suggestion: "Please log in or use a different email"
+        suggestion: "Please log in or use a different email",
+        statusCode: 409
       });
     }
     
@@ -204,6 +209,7 @@ router.post('/auth/request-otp', async (req, res) => {
     } catch (emailError) {
       console.error('Email sending failed:', emailError);
       return res.status(500).json({
+        success: false,
         error: "Failed to send OTP email",
         message: "Please check your email configuration",
         details: process.env.NODE_ENV === 'development' ? emailError.message : undefined
@@ -213,6 +219,7 @@ router.post('/auth/request-otp', async (req, res) => {
   } catch (err) {
     console.error('Request OTP error:', err);
     res.status(500).json({ 
+      success: false,
       error: err.message || "Failed to request OTP",
       details: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
@@ -226,6 +233,7 @@ router.post('/auth/verify-otp', async (req, res) => {
     // Validate input
     if (!email || !otp) {
       return res.status(400).json({ 
+        success: false,
         error: "Email and OTP are required",
         required: ["email", "otp"]
       });
@@ -234,11 +242,11 @@ router.post('/auth/verify-otp', async (req, res) => {
     // Verify OTP
     const result = verifyOTP(email, otp);
     
-    if (!result. valid) {
+    if (!result.valid) {
       return res.status(400).json({
         success: false,
         error: result.message,
-        remainingAttempts: result.remainingAttempts
+        remainingAttempts: result.remainingAttempts || 0
       });
     }
     
@@ -265,6 +273,7 @@ router.post('/auth/verify-otp', async (req, res) => {
   } catch (err) {
     console.error('Verify OTP error:', err);
     res.status(500).json({ 
+      success: false,
       error: err.message || "Failed to verify OTP",
       details: process.env.NODE_ENV === 'development' ? err.stack : undefined
     });
@@ -1460,4 +1469,5 @@ router.post('/appointments/:appointmentId/reschedule', requireApiKey, async (req
 
 // Export the router
 module.exports = router;
+
 
