@@ -806,35 +806,6 @@ router.get('/patients/search', async (req, res) => {
 });
 
 // ========================================
-// 6. CANCEL APPOINTMENT
-// ========================================
-router.post('/appointments/:appointmentId/cancel', requireApiKey, async (req, res) => {
-  try {
-    const appointment = await Appointment.findOne({ 
-      appointmentId: req.params.appointmentId 
-    });
-    
-    if (!appointment) {
-      return res.status(404).json({ error: "Appointment not found" });
-    }
-    
-    appointment.status = 'cancelled';
-    await appointment.save();
-    
-    // TODO: Cancel Google Calendar event
-    
-    res.json({
-      success: true,
-      message: "Appointment cancelled successfully",
-      appointmentId: appointment.appointmentId
-    });
-    
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ========================================
 // 7. GET PATIENT APPOINTMENTS
 // ========================================
 router.get('/patients/:patientId/appointments', async (req, res) => {
@@ -1077,3 +1048,4 @@ router.post('/appointments/:id/cancel', requireApiKey, async (req, res) => {
 
 // Export the router
 module.exports = router;
+
