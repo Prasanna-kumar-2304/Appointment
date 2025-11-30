@@ -7,6 +7,7 @@ const { getOAuth2Client } = require('./google');
 const Doctor = require('./Doctor');
 const Patient = require('./Patient');
 const Appointment = require('./Appointment');
+const { generateOTP, storeOTP, verifyOTP, sendOTPEmail, getOTPStatus } = require('./otpService');
 
 const { getFreeBusy, createEvent, listCalendars } = require('./google');
 
@@ -153,6 +154,170 @@ async function sendConfirmationEmail({ toEmail, subject, htmlBody, textBody }) {
 // ENHANCED API ENDPOINTS FOR CHATBOT
 // Add these to your existing api.js file
 // ========================================
+router.post('/auth/request-otp', async (req, res) => {
+  try {
+    const { email, name } = req.body;
+    
+    // Validate input
+    if (!email || !name) {
+      return res.status(400).json({ 
+        error: "Email and name are required",
+        required: ["email", "name"]
+      });
+    }
+    
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ 
+        error: "Invalid email format"
+      });
+    }
+    
+    // Check if patient already exists
+    const existingPatient = await Patient.findOne({ email });
+    if (existingPatient) {
+      return res. status(409).json({ 
+        error: "Email already registered",
+        message: "This email is already associated with an account",
+        suggestion: "Please log in or use a different email"
+      });
+    }
+    
+    // Generate OTP
+    const otp = generateOTP();
+    storeOTP(email, otp);
+    
+    // Send OTP via email
+    try {
+      const transporter = getTransporter();
+      await sendOTPEmail(transporter, email, otp, name);
+      
+      res.json({
+        success: true,
+        message: "OTP sent successfully to your email",
+        email: email,
+        expiryTime: "5 minutes",
+        maxAttempts: 5,
+        nextStep: "Verify OTP using /auth/verify-otp endpoint"
+      });
+    } catch (emailError) {
+      console.error('Email sending failed:', emailError);
+      return res.status(500).json({
+        error: "Failed to send OTP email",
+        message: "Please check your email configuration",
+        details: process.env.NODE_ENV === 'development' ? emailError.message : undefined
+      });
+    }
+    
+  } catch (err) {
+    console.error('Request OTP error:', err);
+    res.status(500).json({ 
+      error: err.message || "Failed to request OTP",
+      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+  }
+});
+
+router.post('/auth/verify-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    
+    // Validate input
+    if (!email || !otp) {
+      return res.status(400).json({ 
+        error: "Email and OTP are required",
+        required: ["email", "otp"]
+      });
+    }
+    
+    // Verify OTP
+    const result = verifyOTP(email, otp);
+    
+    if (!result. valid) {
+      return res.status(400).json({
+        success: false,
+        error: result.message,
+        remainingAttempts: result.remainingAttempts
+      });
+    }
+    
+    // Generate verification token (valid for 30 minutes)
+    const verificationToken = crypto.randomBytes(32).toString('hex');
+    const tokenExpiry = Date.now() + (30 * 60 * 1000); // 30 minutes
+    
+    // Store token (in production, use database or Redis)
+    global.verificationTokens = global.verificationTokens || new Map();
+    global.verificationTokens.set(email, {
+      token: verificationToken,
+      expiryTime: tokenExpiry,
+      verified: true
+    });
+    
+    res.json({
+      success: true,
+      message: "OTP verified successfully",
+      email: email,
+      verificationToken: verificationToken,
+      nextStep: "Complete registration using /patients/register endpoint with this verification token"
+    });
+    
+  } catch (err) {
+    console.error('Verify OTP error:', err);
+    res.status(500).json({ 
+      error: err.message || "Failed to verify OTP",
+      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+  }
+});
+
+router.post('/auth/resend-otp', async (req, res) => {
+  try {
+    const { email, name } = req.body;
+    
+    if (!email || !name) {
+      return res.status(400). json({ 
+        error: "Email and name are required"
+      });
+    }
+    
+    // Check if patient already exists
+    const existingPatient = await Patient.findOne({ email });
+    if (existingPatient) {
+      return res. status(409).json({ 
+        error: "Email already registered"
+      });
+    }
+    
+    // Generate new OTP
+    const otp = generateOTP();
+    storeOTP(email, otp);
+    
+    // Send OTP via email
+    try {
+      const transporter = getTransporter();
+      await sendOTPEmail(transporter, email, otp, name);
+      
+      res. json({
+        success: true,
+        message: "New OTP sent successfully",
+        email: email,
+        expiryTime: "5 minutes"
+      });
+    } catch (emailError) {
+      return res.status(500).json({
+        error: "Failed to resend OTP email",
+        details: process.env.NODE_ENV === 'development' ? emailError.message : undefined
+      });
+    }
+    
+  } catch (err) {
+    console.error('Resend OTP error:', err);
+    res.status(500).json({ 
+      error: err.message || "Failed to resend OTP"
+    });
+  }
+});
 
 // ========================================
 // 1. GET DOCTORS BY SPECIALTY
@@ -853,14 +1018,47 @@ router.post('/patients/register', requireApiKey, async (req, res) => {
       phone,
       dateOfBirth,
       gender,
-      address
+      address,
+      verificationToken  // ✅ NEW: Required token from OTP verification
     } = req.body;
     
     // Validate required fields
-    if (!name || (!email && !phone)) {
+    if (!name || (! email && !phone)) {
       return res.status(400).json({ 
         error: "Missing required fields",
-        required: ["name", "email or phone"]
+        required: ["name", "email or phone", "verificationToken"]
+      });
+    }
+    
+    // ✅ NEW: Verify the verification token
+    if (!verificationToken) {
+      return res.status(400).json({ 
+        error: "Verification token required",
+        message: "Please complete OTP verification first",
+        steps: [
+          "1. Call POST /auth/request-otp with email and name",
+          "2. Call POST /auth/verify-otp with email and OTP",
+          "3. Use the returned verificationToken in this request"
+        ]
+      });
+    }
+    
+    // ✅ NEW: Validate token
+    global.verificationTokens = global.verificationTokens || new Map();
+    const tokenData = global.verificationTokens.get(email);
+    
+    if (!tokenData || tokenData.token !== verificationToken) {
+      return res.status(401).json({ 
+        error: "Invalid verification token",
+        message: "Please verify your OTP again"
+      });
+    }
+    
+    if (Date.now() > tokenData.expiryTime) {
+      global.verificationTokens.delete(email);
+      return res.status(401).json({ 
+        error: "Verification token expired",
+        message: "Please request a new OTP"
       });
     }
     
@@ -875,41 +1073,109 @@ router.post('/patients/register', requireApiKey, async (req, res) => {
     if (existingPatient) {
       return res.status(409).json({ 
         error: "Patient already registered",
-        message: "A patient with this email or phone already exists",
-        patient: {
-          patientId: existingPatient.patientId,
-          name: existingPatient.name,
-          email: existingPatient.email,
-          phone: existingPatient.phone
-        }
+        message: "A patient with this email or phone already exists"
       });
     }
     
     // Create new patient
     const patient = new Patient({
-      patientId: `P-${uuidv4().slice(0, 8)}`,
+      patientId: `P-${uuidv4(). slice(0, 8)}`,
       name,
       email,
       phone,
       dateOfBirth,
       gender,
-      address
+      address,
+      emailVerified: true,
+      registrationDate: new Date()
     });
     
     await patient.save();
     
-    console.log('Patient registered successfully:', patient.patientId);
+    // Clean up verification token
+    global.verificationTokens. delete(email);
+    
+    // Send welcome email
+    try {
+      const transporter = getTransporter();
+      await transporter.sendMail({
+        from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+        to: email,
+        subject: '🎉 Welcome to Healthcare Plus - Registration Successful',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
+            <div style="background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 10px 10px 0 0;">
+              <h1 style="margin: 0;">🎉 Welcome to Healthcare Plus! </h1>
+            </div>
+            
+            <div style="background-color: white; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
+              <p style="font-size: 16px;">Hello <strong>${name}</strong>,</p>
+              
+              <p>Congratulations!  Your registration has been completed successfully.  Your email has been verified and you're now ready to use all our services.</p>
+              
+              <div style="background-color: #f0f0f0; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                <h3 style="margin-top: 0; color: #333;">Your Patient Profile</h3>
+                <table style="width: 100%; border-collapse: collapse;">
+                  <tr>
+                    <td style="padding: 8px 0;"><strong>Patient ID:</strong></td>
+                    <td style="padding: 8px 0;">${patient.patientId}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px 0;"><strong>Name:</strong></td>
+                    <td style="padding: 8px 0;">${name}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px 0;"><strong>Email:</strong></td>
+                    <td style="padding: 8px 0;">${email}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 8px 0;"><strong>Phone:</strong></td>
+                    <td style="padding: 8px 0;">${phone || '-'}</td>
+                  </tr>
+                </table>
+              </div>
+              
+              <p><strong>You can now:</strong></p>
+              <ul>
+                <li>✅ Book Doctor Appointments</li>
+                <li>✅ Book Lab Slots</li>
+                <li>✅ Order Medicine</li>
+                <li>✅ View Your Appointments</li>
+                <li>✅ Manage Your Profile</li>
+              </ul>
+              
+              <p style="font-size: 14px; color: #666; margin-top: 25px;">If you have any questions or need assistance, please don't hesitate to contact our support team.</p>
+              
+              <hr style="margin: 30px 0; border: none; border-top: 1px solid #e0e0e0;">
+              
+              <p style="color: #666; font-size: 12px; text-align: center; margin: 0;">
+                This is an automated message from Healthcare Plus. <br>
+                For support: support@hospital. com<br>
+                <br>
+                © 2025 Healthcare Plus. All rights reserved. 
+              </p>
+            </div>
+          </div>
+        `
+      });
+    } catch (emailErr) {
+      console.warn('Welcome email failed (non-blocking):', emailErr. message);
+    }
+    
+    console.log('✅ Patient registered successfully:', patient.patientId);
     
     res.json({
       success: true,
-      message: "Patient registered successfully",
+      message: "Patient registered successfully with verified email",
       patient: {
         patientId: patient.patientId,
         name: patient.name,
         email: patient.email,
         phone: patient.phone,
         dateOfBirth: patient.dateOfBirth,
-        gender: patient.gender
+        gender: patient.gender,
+        emailVerified: true,
+        registrationDate: patient.registrationDate
       }
     });
     
@@ -917,7 +1183,7 @@ router.post('/patients/register', requireApiKey, async (req, res) => {
     console.error("Patient registration error:", err);
     res.status(500).json({ 
       error: err.message || "Failed to register patient",
-      details: err.toString()
+      details: process.env.NODE_ENV === 'development' ? err.toString() : undefined
     });
   }
 });
@@ -1194,5 +1460,4 @@ router.post('/appointments/:appointmentId/reschedule', requireApiKey, async (req
 
 // Export the router
 module.exports = router;
-
 
