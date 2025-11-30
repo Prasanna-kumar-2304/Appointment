@@ -44,7 +44,8 @@ function verifyOTP(email, otp) {
   if (!otpStore.has(email)) {
     return {
       valid: false,
-      message: "OTP not found or expired.  Please request a new OTP."
+      message: "OTP not found or expired. Please request a new OTP.",
+      remainingAttempts: 0
     };
   }
   
@@ -55,7 +56,8 @@ function verifyOTP(email, otp) {
     otpStore.delete(email);
     return {
       valid: false,
-      message: "OTP has expired. Please request a new OTP."
+      message: "OTP has expired. Please request a new OTP.",
+      remainingAttempts: 0
     };
   }
   
@@ -64,16 +66,19 @@ function verifyOTP(email, otp) {
     otpStore.delete(email);
     return {
       valid: false,
-      message: "Maximum OTP verification attempts exceeded.  Please request a new OTP."
+      message: "Maximum OTP verification attempts exceeded. Please request a new OTP.",
+      remainingAttempts: 0
     };
   }
   
   // Check if OTP matches
-  if (storedData. otp !== otp. toString()) {
+  if (storedData.otp !== otp.toString()) {
     storedData.attempts += 1;
+    const remaining = 5 - storedData.attempts;
     return {
       valid: false,
-      message: `Invalid OTP.  Attempts remaining: ${5 - storedData.attempts}`
+      message: `Invalid OTP`,
+      remainingAttempts: remaining
     };
   }
   
@@ -81,10 +86,10 @@ function verifyOTP(email, otp) {
   otpStore.delete(email);
   return {
     valid: true,
-    message: "OTP verified successfully"
+    message: "OTP verified successfully",
+    remainingAttempts: null
   };
 }
-
 /**
  * Send OTP via email
  */
