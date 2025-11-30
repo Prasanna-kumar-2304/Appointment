@@ -840,11 +840,169 @@ router.get('/patients/:patientId/appointments', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ========================================
+// PATIENT REGISTRATION ENDPOINT
+// Add this to your api.js file
+// ========================================
+router.post('/patients/register', requireApiKey, async (req, res) => {
+  try {
+    const {
+      name,
+      email,
+      phone,
+      dateOfBirth,
+      gender,
+      address
+    } = req.body;
+    
+    // Validate required fields
+    if (!name || (!email && !phone)) {
+      return res.status(400).json({ 
+        error: "Missing required fields",
+        required: ["name", "email or phone"]
+      });
+    }
+    
+    // Check if patient already exists
+    const existingPatient = await Patient.findOne({ 
+      $or: [
+        ...(email ? [{ email }] : []),
+        ...(phone ? [{ phone }] : [])
+      ]
+    });
+    
+    if (existingPatient) {
+      return res.status(409).json({ 
+        error: "Patient already registered",
+        message: "A patient with this email or phone already exists",
+        patient: {
+          patientId: existingPatient.patientId,
+          name: existingPatient.name,
+          email: existingPatient.email,
+          phone: existingPatient.phone
+        }
+      });
+    }
+    
+    // Create new patient
+    const patient = new Patient({
+      patientId: `P-${uuidv4().slice(0, 8)}`,
+      name,
+      email,
+      phone,
+      dateOfBirth,
+      gender,
+      address
+    });
+    
+    await patient.save();
+    
+    // Send welcome email if email provided
+    if (email) {
+      try {
+        await sendConfirmationEmail({
+          toEmail: email,
+          subject: "Welcome to HealthCare Plus!",
+          htmlBody: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f9f9f9;">
+              <div style="background-color: #4CAF50; color: white; padding: 20px; text-align: center; border-radius: 10px 10px 0 0;">
+                <h1 style="margin: 0;">Welcome to HealthCare Plus! 🏥</h1>
+              </div>
+              
+              <div style="background-color: white; padding: 30px; border-radius: 0 0 10px 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
+                <p style="font-size: 16px;">Dear <strong>${name}</strong>,</p>
+                
+                <p>Thank you for registering with HealthCare Plus!</p>
+                
+                <div style="background-color: #f0f0f0; padding: 20px; border-radius: 8px; margin: 20px 0;">
+                  <h3 style="margin-top: 0; color: #333;">Your Patient Details</h3>
+                  <table style="width: 100%; border-collapse: collapse;">
+                    <tr>
+                      <td style="padding: 8px 0;"><strong>Patient ID:</strong></td>
+                      <td style="padding: 8px 0;">${patient.patientId}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding: 8px 0;"><strong>Name:</strong></td>
+                      <td style="padding: 8px 0;">${name}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding: 8px 0;"><strong>Email:</strong></td>
+                      <td style="padding: 8px 0;">${email}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding: 8px 0;"><strong>Phone:</strong></td>
+                      <td style="padding: 8px 0;">${phone || 'Not provided'}</td>
+                    </tr>
+                  </table>
+                </div>
+                
+                <p>You can now:</p>
+                <ul>
+                  <li>Book doctor appointments</li>
+                  <li>Schedule lab tests</li>
+                  <li>Order medicines</li>
+                  <li>View your medical history</li>
+                </ul>
+                
+                <hr style="margin: 30px 0; border: none; border-top: 1px solid #e0e0e0;">
+                
+                <p style="color: #666; font-size: 13px; text-align: center; margin: 0;">
+                  This is an automated message from HealthCare Plus.<br>
+                  For any queries, please contact: support@hospital.com
+                </p>
+              </div>
+            </div>
+          `,
+          textBody: `
+Welcome to HealthCare Plus!
+
+Dear ${name},
+
+Thank you for registering with HealthCare Plus!
+
+YOUR PATIENT DETAILS:
+Patient ID: ${patient.patientId}
+Name: ${name}
+Email: ${email}
+Phone: ${phone || 'Not provided'}
+
+You can now:
+- Book doctor appointments
+- Schedule lab tests
+- Order medicines
+- View your medical history
+
+---
+This is an automated message from HealthCare Plus.
+For any queries, please contact: support@hospital.com
+          `
+        });
+      } catch (mailErr) {
+        console.error("Welcome email failed:", mailErr);
+      }
+    }
+    
+    res.json({
+      success: true,
+      message: "Patient registered successfully",
+      patient: {
+        patientId: patient.patientId,
+        name: patient.name,
+        email: patient.email,
+        phone: patient.phone,
+        dateOfBirth: patient.dateOfBirth,
+        gender: patient.gender
+      }
+    });
+    
+  } catch (err) {
+    console.error("Patient registration error:", err);
+    res.status(500).json({ 
+      error: err.message || "Failed to register patient",
+      details: err.toString()
+    });
+  }
+});
 // Export the router
 module.exports = router;
-
-
-
-
-
-
