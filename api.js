@@ -43,17 +43,25 @@ function getTransporter() {
     }`);
   }
   
+  const port = parseInt(process.env.SMTP_PORT || '587');
+  
   const config = {
     host: process.env.SMTP_HOST.trim(),
-    port: parseInt(process.env.SMTP_PORT || '587'),
-    secure: (process.env.SMTP_PORT === '465'),
+    port: port,
+    secure: (port === 465), // true for 465, false for 587
     auth: {
       user: process.env.SMTP_USER.trim(),
       pass: process.env.SMTP_PASS.trim()
     },
     tls: {
-      rejectUnauthorized: false
+      rejectUnauthorized: false,
+      ciphers: 'SSLv3'
     },
+    // FIXED: Add connection timeout and socket timeout
+    connectionTimeout: 10000, // 10 seconds
+    greetingTimeout: 5000,
+    socketTimeout: 15000,
+    
     debug: true, // Enable debug output
     logger: true // Enable logging
   };
@@ -67,6 +75,7 @@ function getTransporter() {
   
   return nodemailer.createTransport(config);
 }
+
 
 // ----------------------
 // Build description
@@ -110,7 +119,9 @@ function buildDescriptionPayload({ patient, doctor, reason, appointmentType, pay
 // ----------------------
 // Email Sender with proper error handling
 // ----------------------
-async function sendConfirmationEmail({ toEmail, subject, htmlBody, textBody }) {
+async function sendConfirmationEmail({ toEmail, subject, htmlBody, textBody }, retryCount = 0) {
+  const MAX_RETRIES = 2;
+  
   // Validate email address exists
   if (!toEmail) {
     console.warn("No recipient email provided; skipping email send");
@@ -126,24 +137,44 @@ async function sendConfirmationEmail({ toEmail, subject, htmlBody, textBody }) {
   try {
     const transporter = getTransporter();
     
-    // Verify connection
-    await transporter.verify();
-    console.log('SMTP server connection verified');
+    // Verify connection with timeout
+    console.log('Verifying SMTP connection...');
+    await Promise.race([
+      transporter.verify(),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Verification timeout')), 10000)
+      )
+    ]);
+    console.log('✅ SMTP server connection verified');
     
-    // Send email
-    const info = await transporter.sendMail({
-      from: process.env.FROM_EMAIL || process.env.SMTP_USER,
-      to: toEmail,
-      subject,
-      text: textBody,
-      html: htmlBody
-    });
+    // Send email with timeout
+    console.log('Sending email to:', toEmail);
+    const info = await Promise.race([
+      transporter.sendMail({
+        from: process.env.FROM_EMAIL || process.env.SMTP_USER,
+        to: toEmail,
+        subject,
+        text: textBody,
+        html: htmlBody
+      }),
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Email send timeout')), 15000)
+      )
+    ]);
     
-    console.log('Email sent successfully:', info.messageId);
+    console.log('✅ Email sent successfully:', info.messageId);
     return { success: true, messageId: info.messageId };
     
   } catch (error) {
-    console.error('Email sending error:', error);
+    console.error('❌ Email sending error:', error.message);
+    
+    // Retry logic for connection timeouts
+    if ((error.code === 'ETIMEDOUT' || error.message.includes('timeout')) && retryCount < MAX_RETRIES) {
+      console.log(`🔄 Retrying email send (attempt ${retryCount + 1}/${MAX_RETRIES})...`);
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+      return sendConfirmationEmail({ toEmail, subject, htmlBody, textBody }, retryCount + 1);
+    }
+    
     throw error;
   }
 }
@@ -1469,5 +1500,4 @@ router.post('/appointments/:appointmentId/reschedule', requireApiKey, async (req
 
 // Export the router
 module.exports = router;
-
 
