@@ -2,7 +2,8 @@ const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
 const nodemailer = require('nodemailer');
-
+const { google } = require('googleapis');
+const { getOAuth2Client } = require('./google');
 const Doctor = require('./Doctor');
 const Patient = require('./Patient');
 const Appointment = require('./Appointment');
@@ -961,8 +962,9 @@ router.get('/appointments/email/:email', async (req, res) => {
       });
     }
     
+    // Get all appointments (including cancelled if you want to show them)
     const appointments = await Appointment.find({ 
-      patientEmail: email 
+      patientEmail: email
     }).sort({ startDateTime: -1 });
 
     res.json({
@@ -970,6 +972,7 @@ router.get('/appointments/email/:email', async (req, res) => {
       count: appointments.length,
       appointments: appointments.length > 0 ? appointments : []
     });
+    
   } catch (err) {
     console.error('Error fetching appointments by email:', err);
     res.status(500).json({ 
@@ -979,47 +982,98 @@ router.get('/appointments/email/:email', async (req, res) => {
   }
 });
 // In your backend API - appointments cancel endpoint
-router.post('/appointments/:id/cancel', async (req, res) => {
+router.post('/appointments/:id/cancel', requireApiKey, async (req, res) => {
   try {
     const appointmentId = req.params.id;
     
-    // Get appointment details
+    console.log('=== CANCELLING APPOINTMENT ===');
+    console.log('Appointment ID:', appointmentId);
+    
+    // 1. Find the appointment
     const appointment = await Appointment.findOne({ appointmentId });
     
     if (!appointment) {
-      return res.status(404).json({ success: false, error: 'Appointment not found' });
+      console.log('❌ Appointment not found');
+      return res.status(404).json({ 
+        success: false, 
+        error: 'Appointment not found' 
+      });
     }
     
-    // 1. Delete from Google Calendar if googleEventId exists
+    console.log('✅ Found appointment:', {
+      appointmentId: appointment.appointmentId,
+      googleEventId: appointment.googleEventId,
+      patientEmail: appointment.patientEmail,
+      doctorId: appointment.doctorId
+    });
+    
+    // 2. Get doctor's calendar ID
+    const doctor = await Doctor.findOne({ doctorId: appointment.doctorId });
+    
+    if (!doctor) {
+      console.log('⚠️ Doctor not found, but continuing with cancellation');
+    }
+    
+    const calendarId = doctor && doctor.calendarId ? doctor.calendarId : 'primary';
+    
+    console.log('Calendar ID:', calendarId);
+    
+    // 3. Delete from Google Calendar if googleEventId exists
+    let calendarDeleteSuccess = false;
     if (appointment.googleEventId) {
       try {
+        console.log('🗓️ Attempting to delete from Google Calendar...');
+        console.log('Event ID:', appointment.googleEventId);
+        
+        // Get authenticated Google Calendar client
+        const auth = getOAuth2Client();
+        const calendar = google.calendar({ version: 'v3', auth });
+        
+        // Delete the event
         await calendar.events.delete({
-          calendarId: 'primary',
-          eventId: appointment.googleEventId
+          calendarId: calendarId,
+          eventId: appointment.googleEventId,
+          sendUpdates: 'none' // Don't send update emails
         });
-        console.log('Deleted from Google Calendar');
+        
+        console.log('✅ Successfully deleted from Google Calendar');
+        calendarDeleteSuccess = true;
+        
       } catch (calError) {
-        console.error('Error deleting from Google Calendar:', calError);
+        console.error('❌ Error deleting from Google Calendar:', calError.message);
+        console.error('Full error:', calError);
+        
+        // Don't fail the entire operation if calendar deletion fails
+        // Continue with database deletion
       }
+    } else {
+      console.log('ℹ️ No Google Calendar event ID found');
     }
     
-    // 2. Either DELETE from database
+    // 4. Delete from database
     await Appointment.deleteOne({ appointmentId });
+    console.log('✅ Appointment deleted from database');
     
-    // OR update status to cancelled (if you want to keep records)
-    // await Appointment.updateOne({ appointmentId }, { status: 'cancelled' });
-    
+    // 5. Return success response
     res.json({ 
       success: true, 
       message: 'Appointment cancelled successfully',
-      appointmentId 
+      appointmentId,
+      details: {
+        deletedFromDatabase: true,
+        deletedFromCalendar: calendarDeleteSuccess
+      }
     });
     
   } catch (error) {
-    console.error('Cancel error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    console.error('❌ Cancel appointment error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
+
 // Export the router
 module.exports = router;
-
