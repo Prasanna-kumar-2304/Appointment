@@ -925,6 +925,23 @@ router.post('/patients/register', requireApiKey, async (req, res) => {
     });
   }
 });
+
+router.get('/appointments/email/:email', async (req, res) => {
+  try {
+    const email = req.params.email;
+    const appointments = await Appointment.find({ patientEmail: email });
+
+    res.json({
+      success: true,
+      count: appointments.length,
+      appointments
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Export the router
 module.exports = router;
+
 
