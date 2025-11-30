@@ -953,20 +953,31 @@ router.post('/patients/register', requireApiKey, async (req, res) => {
 router.get('/appointments/email/:email', async (req, res) => {
   try {
     const email = req.params.email;
-    const appointments = await Appointment.find({ patientEmail: email });
+    
+    if (!email || email === 'null' || email === 'undefined') {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Valid email is required' 
+      });
+    }
+    
+    const appointments = await Appointment.find({ 
+      patientEmail: email 
+    }).sort({ startDateTime: -1 });
 
     res.json({
       success: true,
       count: appointments.length,
-      appointments
+      appointments: appointments.length > 0 ? appointments : []
     });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    console.error('Error fetching appointments by email:', err);
+    res.status(500).json({ 
+      success: false, 
+      error: err.message 
+    });
   }
 });
 
 // Export the router
 module.exports = router;
-
-
-
