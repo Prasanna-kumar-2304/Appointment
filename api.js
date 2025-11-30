@@ -978,6 +978,48 @@ router.get('/appointments/email/:email', async (req, res) => {
     });
   }
 });
-
+// In your backend API - appointments cancel endpoint
+router.post('/appointments/:id/cancel', async (req, res) => {
+  try {
+    const appointmentId = req.params.id;
+    
+    // Get appointment details
+    const appointment = await Appointment.findOne({ appointmentId });
+    
+    if (!appointment) {
+      return res.status(404).json({ success: false, error: 'Appointment not found' });
+    }
+    
+    // 1. Delete from Google Calendar if googleEventId exists
+    if (appointment.googleEventId) {
+      try {
+        await calendar.events.delete({
+          calendarId: 'primary',
+          eventId: appointment.googleEventId
+        });
+        console.log('Deleted from Google Calendar');
+      } catch (calError) {
+        console.error('Error deleting from Google Calendar:', calError);
+      }
+    }
+    
+    // 2. Either DELETE from database
+    await Appointment.deleteOne({ appointmentId });
+    
+    // OR update status to cancelled (if you want to keep records)
+    // await Appointment.updateOne({ appointmentId }, { status: 'cancelled' });
+    
+    res.json({ 
+      success: true, 
+      message: 'Appointment cancelled successfully',
+      appointmentId 
+    });
+    
+  } catch (error) {
+    console.error('Cancel error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 // Export the router
 module.exports = router;
+
